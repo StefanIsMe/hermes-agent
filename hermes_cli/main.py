@@ -905,6 +905,7 @@ def _model_flow_openrouter(config, current_model=""):
         if get_env_value("OPENAI_BASE_URL"):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
+        save_env_value("HERMES_INFERENCE_PROVIDER", "openrouter")
         _save_model_choice(selected)
 
         # Update config provider and deactivate any OAuth provider
@@ -987,6 +988,7 @@ def _model_flow_nous(config, current_model=""):
 
     selected = _prompt_model_selection(model_ids, current_model=current_model)
     if selected:
+        save_env_value("HERMES_INFERENCE_PROVIDER", "nous")
         _save_model_choice(selected)
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
@@ -1036,6 +1038,7 @@ def _model_flow_openai_codex(config, current_model=""):
 
     selected = _prompt_model_selection(codex_models, current_model=current_model)
     if selected:
+        save_env_value("HERMES_INFERENCE_PROVIDER", "openai-codex")
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         # Clear custom endpoint env vars that would otherwise override Codex.
@@ -1092,6 +1095,7 @@ def _model_flow_custom(config):
         save_env_value("OPENAI_API_KEY", api_key)
 
     if model_name:
+        save_env_value("HERMES_INFERENCE_PROVIDER", "custom")
         _save_model_choice(model_name)
 
         # Update config and deactivate any OAuth provider
@@ -1108,6 +1112,7 @@ def _model_flow_custom(config):
         print(f"Default model set to: {model_name} (via {effective_url})")
     else:
         if base_url or api_key:
+            save_env_value("HERMES_INFERENCE_PROVIDER", "custom")
             deactivate_provider()
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
@@ -1240,6 +1245,7 @@ def _model_flow_named_custom(config, provider_info):
         save_env_value("OPENAI_BASE_URL", base_url)
         if api_key:
             save_env_value("OPENAI_API_KEY", api_key)
+        save_env_value("HERMES_INFERENCE_PROVIDER", "custom")
         _save_model_choice(saved_model)
 
         cfg = load_config()
@@ -1314,6 +1320,7 @@ def _model_flow_named_custom(config, provider_info):
     save_env_value("OPENAI_BASE_URL", base_url)
     if api_key:
         save_env_value("OPENAI_API_KEY", api_key)
+    save_env_value("HERMES_INFERENCE_PROVIDER", "custom")
     _save_model_choice(model_name)
 
     cfg = load_config()
@@ -1427,6 +1434,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         if get_env_value("OPENAI_BASE_URL"):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
+        save_env_value("HERMES_INFERENCE_PROVIDER", provider_id)
 
         _save_model_choice(selected)
 

@@ -888,10 +888,22 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
 
     # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
+    # Normalize "keep current" to an explicit provider so downstream logic
+    # (model list + env persistence) doesn't fall back to OpenRouter defaults.
+    if selected_provider is None:
+        if active_oauth and active_oauth in PROVIDER_REGISTRY:
+            selected_provider = active_oauth
+        elif existing_custom:
+            selected_provider = "custom"
+        elif existing_or:
+            selected_provider = "openrouter"
 
     # ── OpenRouter API Key for tools (if not already set) ──
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
     # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
+    if selected_provider in ("nous", "nous-api", "openai-codex", "openrouter", "custom", "zai", "kimi-coding", "minimax", "minimax-cn"):
+        save_env_value("HERMES_INFERENCE_PROVIDER", selected_provider)
+
     if selected_provider in ("nous", "nous-api", "openai-codex", "custom", "zai", "kimi-coding", "minimax", "minimax-cn") and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
