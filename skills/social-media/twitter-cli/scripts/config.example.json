@@ -1,0 +1,16 @@
+{
+  "auth_method": null,
+  "cdp_host": "127.0.0.1",
+  "cdp_port": 9222,
+  "wsl_proxy": false,
+  "wsl_windows_python": "/mnt/c/Windows/py.exe",
+  "rules": {
+    "single_tweets_only": true,
+    "freshness_days": 7,
+    "min_delay_seconds": 1.5,
+    "max_delay_seconds": 4.0
+  },
+  "banned_topics": [],
+  "notes": "Add your own content guidelines here"
+}
+EOF; __hermes_rc=$?; printf '__HERMES_FENCE_a9f7b3__'; exit $__hermes_rc
