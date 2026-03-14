@@ -11,6 +11,7 @@ Saves config to config.json and auth to auth.env.
 
 import json
 import os
+import platform
 import stat
 import subprocess
 import sys
@@ -266,6 +267,53 @@ def manual_entry():
     return True
 
 
+def check_compatibility():
+    """Check system compatibility for twitter-cli."""
+    issues = []
+    warnings = []
+
+    # Python version check (twitter-cli requires >= 3.10)
+    py_version = sys.version_info
+    if py_version < (3, 10):
+        issues.append(f"Python {py_version.major}.{py_version.minor} detected. twitter-cli requires Python >= 3.10")
+    else:
+        print(f"[OK] Python {py_version.major}.{py_version.minor}.{py_version.micro}")
+
+    # Platform check
+    system = platform.system()
+    machine = platform.machine()
+    print(f"[OK] Platform: {system} {machine}")
+
+    if system not in ("Linux", "Darwin", "Windows"):
+        issues.append(f"Unsupported platform: {system}. twitter-cli supports Linux, macOS, and Windows.")
+
+    # Check for curl_cffi compatibility (used for TLS fingerprinting)
+    # curl_cffi needs: Linux (glibc/musl), macOS, Windows
+    if system == "Linux":
+        try:
+            import ctypes
+            libc = ctypes.CDLL("libc.so.6")
+            print("[OK] Linux glibc detected (curl_cffi compatible)")
+        except OSError:
+            warnings.append("Non-glibc Linux detected. curl_cffi may need manual compilation.")
+
+    # Check pip/uv availability
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True, timeout=5)
+        print("[OK] pip available")
+    except Exception:
+        issues.append("pip not found. Install pip first.")
+
+    # Check if uv is available (recommended installer)
+    try:
+        subprocess.run(["uv", "--version"], capture_output=True, timeout=5)
+        print("[OK] uv available (recommended installer)")
+    except Exception:
+        warnings.append("uv not found. Will use pip instead (slower but works).")
+
+    return issues, warnings
+
+
 def cmd_setup(args):
     """Interactive setup wizard."""
     config = load_config()
@@ -275,19 +323,61 @@ def cmd_setup(args):
     print("=" * 60)
     print()
 
+    # Compatibility check
+    print("Checking system compatibility...")
+    print("-" * 40)
+    issues, warnings = check_compatibility()
+
+    if issues:
+        print()
+        print("[X] Compatibility issues found:")
+        for issue in issues:
+            print(f"    - {issue}")
+        print()
+        print("twitter-cli cannot be installed on this system.")
+        print("See: https://github.com/jackwener/twitter-cli#installation")
+        return 1
+
+    if warnings:
+        for w in warnings:
+            print(f"[!] {w}")
+        print()
+
+    print()
+
     # Check if twitter-cli is installed
     try:
         subprocess.run(["twitter", "--version"], capture_output=True, timeout=5)
         print("[OK] twitter-cli is installed")
     except Exception:
-        print("[!] twitter-cli not found. Install with:")
-        print("    pip install twitter-cli")
+        print("[!] twitter-cli not found.")
         print()
-        install = input("Install now? [Y/n]: ").strip().lower()
+        install = input("Install twitter-cli now? [Y/n]: ").strip().lower()
         if install != "n":
-            subprocess.run([sys.executable, "-m", "pip", "install", "twitter-cli"])
+            # Try uv first (recommended), fall back to pip
+            try:
+                subprocess.run(["uv", "--version"], capture_output=True, timeout=5)
+                print("Installing via uv (recommended)...")
+                result = subprocess.run(["uv", "tool", "install", "twitter-cli"], capture_output=True, text=True)
+            except Exception:
+                print("Installing via pip...")
+                result = subprocess.run([sys.executable, "-m", "pip", "install", "twitter-cli"], capture_output=True, text=True)
+
+            if result.returncode != 0:
+                print(f"Installation failed: {result.stderr[:300]}")
+                return 1
+
+            # Verify
+            try:
+                subprocess.run(["twitter", "--version"], capture_output=True, timeout=5)
+                print("[OK] twitter-cli installed successfully")
+            except Exception:
+                print("[!] Installation succeeded but twitter command not found in PATH")
+                print("    You may need to restart your shell or add ~/.local/bin to PATH")
+                return 1
         else:
-            print("Please install twitter-cli manually and run setup again.")
+            print("Install manually with: uv tool install twitter-cli")
+            print("Or: pip install twitter-cli")
             return 1
 
     print()
