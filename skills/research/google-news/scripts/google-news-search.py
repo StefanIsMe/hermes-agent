@@ -26,6 +26,94 @@ import os
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, 'google-news-categories.json')
 
+def check_compatibility():
+    """Check system compatibility for google-news skill."""
+    import platform
+    import shutil
+    issues = []
+    warnings = []
+
+    # Python version
+    py = sys.version_info
+    if py < (3, 8):
+        issues.append(f"Python {py.major}.{py.minor} detected. Requires Python >= 3.8")
+    else:
+        print(f"[OK] Python {py.major}.{py.minor}.{py.micro}")
+
+    # Platform
+    system = platform.system()
+    if system not in ("Linux", "Darwin", "Windows"):
+        warnings.append(f"Untested platform: {system}")
+    else:
+        print(f"[OK] Platform: {system} {platform.machine()}")
+
+    # Scrapling CLI - check PATH and common locations
+    scrapling_found = False
+    for loc in ["scrapling", os.path.expanduser("~/.local/bin/scrapling"), "/usr/local/bin/scrapling"]:
+        if shutil.which(loc) or os.path.exists(loc):
+            scrapling_found = True
+            break
+    if not scrapling_found:
+        # Try finding via pip
+        try:
+            r = subprocess.run([sys.executable, "-m", "pip", "show", "scrapling"], capture_output=True, timeout=10)
+            if r.returncode == 0:
+                scrapling_found = True
+                warnings.append("scrapling installed but CLI not in PATH. Add ~/.local/bin to PATH or use full path.")
+        except Exception:
+            pass
+    if scrapling_found:
+        print("[OK] Scrapling CLI available")
+    else:
+        issues.append("scrapling not found. Install: pip install scrapling")
+
+    # Scrapling Python library
+    try:
+        from scrapling.parser import Selector
+        print("[OK] Scrapling Python library available")
+    except ImportError:
+        issues.append("scrapling Python library not found. Install: pip install scrapling")
+
+    return len(issues) == 0, issues, warnings
+
+
+    # Python version
+    py = sys.version_info
+    if py < (3, 8):
+        issues.append(f"Python {py.major}.{py.minor} detected. Requires Python >= 3.8")
+    else:
+        print(f"[OK] Python {py.major}.{py.minor}.{py.micro}")
+
+    # Platform
+    system = platform.system()
+    if system not in ("Linux", "Darwin", "Windows"):
+        warnings.append(f"Untested platform: {system}")
+    else:
+        print(f"[OK] Platform: {system} {platform.machine()}")
+
+    # Scrapling CLI
+    try:
+        r = subprocess.run(["scrapling", "--version"], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            print("[OK] Scrapling CLI installed")
+        else:
+            issues.append("scrapling CLI not found. Install: pip install scrapling")
+    except FileNotFoundError:
+        issues.append("scrapling CLI not found. Install: pip install scrapling")
+    except Exception as e:
+        warnings.append(f"Could not check scrapling: {e}")
+
+    # Scrapling Python library
+    try:
+        from scrapling.parser import Selector
+        print("[OK] Scrapling Python library available")
+    except ImportError:
+        issues.append("scrapling Python library not found. Install: pip install scrapling")
+
+    return len(issues) == 0, issues, warnings
+
+
+
 # Load categories from config, fallback to hardcoded
 def load_categories():
     try:
@@ -179,6 +267,11 @@ def main():
     
     if not args:
         pass
+    elif args[0] == "--check":
+        ok, issues, warnings = check_compatibility()
+        result = {"compatible": ok, "issues": issues, "warnings": warnings}
+        print(json.dumps(result, indent=2))
+        sys.exit(0 if ok else 1)
     elif args[0] == "search":
         query = args[1] if len(args) > 1 else "AI agents"
         region = args[2] if len(args) > 2 else "US"
