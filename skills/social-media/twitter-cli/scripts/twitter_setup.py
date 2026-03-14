@@ -182,8 +182,10 @@ main()
 
     if is_wsl or wsl_proxy:
         # WSL2 mode - run extraction on Windows side
-        win_script_path = r"D:\Hermes\temp\extract_twitter_cookies.py"
-        wsl_script_path = "/mnt/d/Hermes/temp/extract_twitter_cookies.py"
+        # Use system temp directory for cross-platform compatibility
+        temp_dir = tempfile.gettempdir()
+        win_script_path = os.path.join(temp_dir, "extract_twitter_cookies.py")
+        wsl_script_path = win_script_path  # Will be converted via wslpath if needed
 
         # Write script to Windows-accessible location
         os.makedirs(os.path.dirname(wsl_script_path), exist_ok=True)
