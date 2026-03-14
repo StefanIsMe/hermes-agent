@@ -132,6 +132,14 @@ twitter reply 1234567890 "Great point! I think..."
 ```
 
 ## Dependencies
+### Requirements
+
+- **Python >= 3.10** (twitter-cli will not work on Python 3.9 or older)
+- **Linux, macOS, or Windows** (twitter-cli uses curl_cffi which needs platform-specific wheels)
+- **glibc-based Linux** recommended (Alpine/musl may need manual curl_cffi compilation)
+
+The setup wizard checks these requirements before attempting installation.
+
 
 - Python 3.8+
 - `twitter-cli` (pip install twitter-cli)
