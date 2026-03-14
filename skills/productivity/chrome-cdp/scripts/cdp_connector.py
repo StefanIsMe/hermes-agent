@@ -136,6 +136,53 @@ def find_chrome_binary():
     return None
 
 
+
+def check_compatibility():
+    """Check system compatibility for chrome-cdp skill."""
+    import shutil
+    issues = []
+    warnings = []
+
+    # Python version
+    py = sys.version_info
+    if py < (3, 8):
+        issues.append(f"Python {py.major}.{py.minor} detected. Requires Python >= 3.8")
+    else:
+        print(f"[OK] Python {py.major}.{py.minor}.{py.micro}")
+
+    # Platform
+    system = platform.system()
+    if system not in ("Linux", "Darwin", "Windows"):
+        issues.append(f"Unsupported platform: {system}. Supports Linux, macOS, Windows.")
+    else:
+        print(f"[OK] Platform: {system} {platform.machine()}")
+
+    # WSL detection
+    if is_wsl():
+        print("[OK] WSL detected — WSL proxy mode available")
+        if is_wsl2():
+            print("[OK] WSL2 detected — network isolation handled via proxy")
+
+    # websockets library
+    try:
+        import websockets
+        print(f"[OK] websockets library available (v{websockets.__version__})")
+    except ImportError:
+        issues.append("websockets not found. Install: pip install websockets")
+
+    # Chrome/Chromium binary
+    chrome = find_chrome_binary()
+    if chrome:
+        print(f"[OK] Chrome found: {chrome}")
+    else:
+        warnings.append("Chrome/Chromium not found. Install Chrome or run: apt install chromium-browser")
+        warnings.append("You can still use the skill with remote Chrome via --host flag")
+
+    return len(issues) == 0, issues, warnings
+
+
+
+
 def get_default_profile_path():
     """Get default Chrome profile path for this platform."""
     system = platform.system()
@@ -877,6 +924,14 @@ def cmd_close_tab(args):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+def cmd_check(args):
+    """Check system compatibility."""
+    ok, issues, warnings = check_compatibility()
+    result = {"compatible": ok, "issues": issues, "warnings": warnings}
+    print(json.dumps(result, indent=2))
+    return 0 if ok else 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Chrome CDP Connector - Browser automation via Chrome DevTools Protocol",
@@ -984,6 +1039,9 @@ WSL2 Usage:
     p_set_cookie.add_argument("--domain", help="Cookie domain")
     p_set_cookie.add_argument("--path", default="/", help="Cookie path")
 
+    # check
+    sub.add_parser("check", help="Check system compatibility")
+
     # close-tab
     p_close = sub.add_parser("close-tab", help="Close a tab")
     add_common_args(p_close)
@@ -998,6 +1056,7 @@ WSL2 Usage:
     commands = {
         "setup": cmd_setup,
         "config": cmd_config,
+        "check": cmd_check,
         "status": cmd_status,
         "tabs": cmd_tabs,
         "launch": cmd_launch,
