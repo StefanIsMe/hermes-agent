@@ -100,10 +100,13 @@ EXEMPT_DOMAINS: set[str] = set(BUILTIN_EXEMPT_DOMAINS)
 
 
 # =============================================================================
-# Blocked Domains - Persistent blocklist
+# Blocked Domains - Loaded from YAML config + user additions
 # =============================================================================
 
-# Runtime blocked set (loaded from file)
+# Default config file (ships with Hermes)
+DEFAULT_CONFIG_FILE = Path(__file__).parent / "web_safety.yaml"
+
+# Runtime blocked set (loaded from files)
 BLOCKED_DOMAINS: set[str] = set()
 
 
@@ -136,21 +139,40 @@ def _ensure_initialized() -> None:
 
 
 def _load_blocked_domains() -> int:
-    """Load blocked domains from persistent file."""
-    if not BLOCKED_DOMAINS_FILE.exists():
-        return 0
-    
+    """Load blocked domains from default YAML config and user additions file."""
     count = 0
+    
+    # First, load from default YAML config (ships with Hermes)
     try:
-        with open(BLOCKED_DOMAINS_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip().lower()
-                if line and not line.startswith("#"):
-                    BLOCKED_DOMAINS.add(line)
+        if DEFAULT_CONFIG_FILE.exists():
+            import yaml
+            with open(DEFAULT_CONFIG_FILE, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+            domains = config.get("blocked_domains", [])
+            for domain in domains:
+                domain = str(domain).lower().strip()
+                if domain:
+                    BLOCKED_DOMAINS.add(domain)
                     count += 1
-        logger.debug("Loaded %d blocked domains from %s", count, BLOCKED_DOMAINS_FILE)
+            logger.debug("Loaded %d blocked domains from %s", count, DEFAULT_CONFIG_FILE)
+    except ImportError:
+        logger.warning("PyYAML not installed, skipping default blocked domains config")
     except Exception as e:
-        logger.warning("Failed to load blocked domains: %s", e)
+        logger.warning("Failed to load default blocked domains: %s", e)
+    
+    # Then, load user additions from persistent file
+    if BLOCKED_DOMAINS_FILE.exists():
+        try:
+            with open(BLOCKED_DOMAINS_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip().lower()
+                    if line and not line.startswith("#"):
+                        BLOCKED_DOMAINS.add(line)
+                        count += 1
+            logger.debug("Loaded user blocked domains from %s", BLOCKED_DOMAINS_FILE)
+        except Exception as e:
+            logger.warning("Failed to load user blocked domains: %s", e)
+    
     return count
 
 
