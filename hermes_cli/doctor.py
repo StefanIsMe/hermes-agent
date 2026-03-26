@@ -239,6 +239,80 @@ def run_doctor(args):
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
         check_ok("~/.hermes/config.yaml exists")
+
+        # Validate model.provider and model.default values
+        try:
+            import yaml as _yaml
+            cfg_text = config_path.read_text(encoding="utf-8")
+            cfg = _yaml.safe_load(cfg_text) or {}
+
+            model_section = cfg.get("model", {}) or {}
+            provider = (model_section.get("provider") or "").strip().lower()
+            default_model = (model_section.get("default") or "").strip()
+
+            # Build the known-provider list from auth.py PROVIDER_REGISTRY
+            try:
+                import sys as _sys
+                _sys.path.insert(0, str(PROJECT_ROOT))
+                from hermes_cli.auth import PROVIDER_REGISTRY
+                known_providers = list(PROVIDER_REGISTRY.keys())
+                # Also accept these well-known aliases
+                known_providers += ["auto", "openrouter", "custom"]
+            except Exception:
+                known_providers = [
+                    "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
+                    "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic",
+                    "alibaba", "openai", "custom", "auto",
+                ]
+
+            if provider and provider not in known_providers:
+                check_fail(
+                    f"model.provider '{provider}' is not a recognised provider",
+                    f"(known: {', '.join(sorted(set(known_providers)))})",
+                )
+                issues.append(
+                    f"model.provider '{provider}' is unknown. "
+                    f"Valid providers: {', '.join(sorted(set(known_providers)))}. "
+                    f"Fix: run 'hermes config set model.provider <valid_provider>'"
+                )
+
+            # Warn if model is set to a provider-specific model without that provider
+            if default_model and "/" in default_model and provider not in ("openrouter", "custom", "auto"):
+                # Provider-specific model notation like "anthropic/claude-opus-4" — valid only for openrouter/custom
+                check_warn(
+                    f"model.default '{default_model}' uses a provider-prefixed model name "
+                    f"but provider is set to '{provider}'",
+                    "(provider-prefixed models only work with openrouter or custom providers)",
+                )
+                issues.append(
+                    f"model.default '{default_model}' is a provider-prefixed model "
+                    f"but model.provider is '{provider}'. "
+                    f"Either set model.provider to 'openrouter', or remove the prefix from model.default "
+                    f"(e.g. use 'claude-opus-4' instead of 'anthropic/claude-opus-4')"
+                )
+
+            # Warn if model is set but provider credentials are not configured
+            if default_model and provider:
+                try:
+                    from hermes_cli.auth import get_provider_credentials
+                    creds = get_provider_credentials(provider)
+                    has_key = creds and creds.get("api_key")
+                    has_url = creds and creds.get("base_url")
+                    if not has_key and not has_url:
+                        check_fail(
+                            f"model.provider '{provider}' is set but no API key or base_url is configured",
+                            "(check ~/.hermes/.env or your provider dashboard)",
+                        )
+                        issues.append(
+                            f"No credentials found for provider '{provider}'. "
+                            f"Set {provider.upper()}_API_KEY in ~/.hermes/.env, "
+                            f"or switch to a configured provider with 'hermes config set model.provider <name>'"
+                        )
+                except Exception:
+                    pass
+
+        except Exception as e:
+            check_warn("Could not validate model/provider config", f"({e})")
     else:
         fallback_config = PROJECT_ROOT / 'cli-config.yaml'
         if fallback_config.exists():
@@ -521,6 +595,16 @@ def run_doctor(args):
             elif response.status_code == 401:
                 print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(invalid API key)', Colors.DIM)}                ")
                 issues.append("Check OPENROUTER_API_KEY in .env")
+            elif response.status_code == 402:
+                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(out of credits — payment required)', Colors.DIM)}")
+                issues.append(
+                    "OpenRouter account has insufficient credits. "
+                    "Fix: run 'hermes config set model.provider <provider>' to switch providers, "
+                    "or fund your OpenRouter account at https://openrouter.ai/settings/credits"
+                )
+            elif response.status_code == 429:
+                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(rate limited)', Colors.DIM)}                ")
+                issues.append("OpenRouter rate limit hit — consider switching to a different provider or waiting")
             else:
                 print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'(HTTP {response.status_code})', Colors.DIM)}                ")
         except Exception as e:
@@ -705,7 +789,7 @@ def run_doctor(args):
         _honcho_cfg_path = resolve_config_path()
 
         if not _honcho_cfg_path.exists():
-            check_warn("Honcho config not found", "run: hermes honcho setup")
+            check_warn("Honcho config not found", f"run: hermes honcho setup")
         elif not hcfg.enabled:
             check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
         elif not hcfg.api_key:
