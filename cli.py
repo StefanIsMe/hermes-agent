@@ -6944,22 +6944,40 @@ class HermesCLI:
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
-        # --- History navigation: up/down browse history in normal input mode ---
-        # The TextArea is multiline, so by default up/down only move the cursor.
-        # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
-        # history browsing when on the first/last line (or single-line input).
+        # --- History navigation: up/down ALWAYS browse history in normal input mode ---
+        # Previous implementation used auto_up/auto_down which only trigger history
+        # browsing when cursor is at the first/last line of the document. In multiline
+        # mode (cursor mid-text), up/down would just move the cursor instead of
+        # browsing history — unexpected and inconsistent with standard REPL behavior.
+        #
+        # Fix: up/down unconditionally browse history. Users who need cursor movement
+        # within multiline input use Ctrl+up / Ctrl+down instead.
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
         )
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
-            event.app.current_buffer.auto_up(count=event.arg)
+            """Up arrow: always browse to previous history entry."""
+            buf = event.app.current_buffer
+            # history_previous() saves current text internally before navigating,
+            # and restores it when navigating forward again (via history_next).
+            buf.history_previous(go_to_end=True)
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
+            """Down arrow: always browse to next history entry."""
+            buf = event.app.current_buffer
+            buf.history_next(go_to_end=True)
+
+        @kb.add('c-up', filter=_normal_input)
+        def cursor_up(event):
+            """Ctrl+Up: move cursor up within multiline input (not history)."""
+            event.app.current_buffer.auto_up(count=event.arg)
+
+        @kb.add('c-down', filter=_normal_input)
+        def cursor_down(event):
+            """Ctrl+Down: move cursor down within multiline input (not history)."""
             event.app.current_buffer.auto_down(count=event.arg)
 
         @kb.add('c-c')
