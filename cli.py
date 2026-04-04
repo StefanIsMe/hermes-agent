@@ -6944,23 +6944,54 @@ class HermesCLI:
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
-        # --- History navigation: up/down browse history in normal input mode ---
-        # The TextArea is multiline, so by default up/down only move the cursor.
-        # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
-        # history browsing when on the first/last line (or single-line input).
+        # --- Cursor movement: up/down move cursor within multiline text ---
+        # Previous implementation used auto_up/auto_down which have a dual behavior:
+        # cursor movement within text OR history browsing depending on cursor position.
+        # When the cursor is at the first/last character of the document, auto_up/auto_down
+        # trigger history browsing instead of cursor movement — unexpected when typing a
+        # multi-line prompt where the cursor is mid-text but up/down should move the
+        # cursor to the line above/below.
+        #
+        # Fix: use explicit cursor position movement. Up/down ALWAYS move cursor within
+        # the text. History browsing is moved to Ctrl+up / Ctrl+down as escape hatch.
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
         )
 
         @kb.add('up', filter=_normal_input)
-        def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
-            event.app.current_buffer.auto_up(count=event.arg)
+        def cursor_up(event):
+            """Up arrow: move cursor up one row within multiline text."""
+            buf = event.app.current_buffer
+            doc = buf.document
+            # Move up one logical row, preserving column position.
+            # Use get_cursor_position_up to get the new position without
+            # the history-browsing fallback that auto_up has.
+            new_pos = doc.translate_index_to_position(
+                doc.get_cursor_position_up(count=event.arg)
+            )
+            buf.set_cursor_position(new_pos)
 
         @kb.add('down', filter=_normal_input)
+        def cursor_down(event):
+            """Down arrow: move cursor down one row within multiline text."""
+            buf = event.app.current_buffer
+            doc = buf.document
+            new_pos = doc.translate_index_to_position(
+                doc.get_cursor_position_down(count=event.arg)
+            )
+            buf.set_cursor_position(new_pos)
+
+        @kb.add('c-up', filter=_normal_input)
+        def history_up(event):
+            """Ctrl+Up: browse to previous history entry."""
+            buf = event.app.current_buffer
+            buf.history_previous(go_to_end=True)
+
+        @kb.add('c-down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
-            event.app.current_buffer.auto_down(count=event.arg)
+            """Ctrl+Down: browse to next history entry."""
+            buf = event.app.current_buffer
+            buf.history_next(go_to_end=True)
 
         @kb.add('c-c')
         def handle_ctrl_c(event):
