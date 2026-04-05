@@ -7040,9 +7040,11 @@ class HermesCLI:
             triggers this with the pasted text.  We also check the
             clipboard for an image on every paste event.
 
-            Large pastes (5+ lines) are collapsed to a compact marker
+            Large pastes (20+ chars) are collapsed to a compact marker
             placeholder while preserving the full pasted text in memory.
             The real content is restored at submit time.
+            URLs are NEVER collapsed — they paste verbatim.
+            Commands starting with / are still collapsed if >= 20 chars.
             """
             pasted_text = event.data or ""
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
@@ -7051,24 +7053,22 @@ class HermesCLI:
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
-                line_count = pasted_text.count('\n')
+                import re
+                URL_RE = re.compile(r'https?://\S+')
+                is_url = bool(URL_RE.search(pasted_text))
                 buf = event.current_buffer
-                # Bypass collapsing only when the pasted text itself starts with /
-                # (e.g. pasting a full slash command like "/effort max" verbatim).
+                # Bypass collapsing only for URLs — they should always paste verbatim.
                 # Do NOT bypass just because the buffer has existing content —
                 # that existing content might be a [Pasted text #N] marker and
                 # the new paste is regular text that should still be collapsed.
-                will_collapse = line_count >= 5 and not pasted_text.strip().startswith('/')
+                will_collapse = len(pasted_text) >= 20 and not is_url
                 if will_collapse:
                     _paste_counter[0] += 1
                     paste_id = str(_paste_counter[0])
                     # Store full content in memory (no temp file)
                     _paste_store[paste_id] = pasted_text
                     _active_paste_ids.add(paste_id)
-                    if line_count == 0:
-                        placeholder = f"[Pasted text #{paste_id} +{len(pasted_text)} chars]"
-                    else:
-                        placeholder = f"[Pasted text #{paste_id} +{line_count + 1} lines]"
+                    placeholder = f"[Pasted text #{paste_id} +{len(pasted_text)} chars]"
                     _paste_just_collapsed[0] = True
                     buf.text = buf.text + placeholder
                     buf.cursor_position = len(buf.text)
@@ -7198,6 +7198,8 @@ class HermesCLI:
             """Detect large pastes and collapse them to a compact marker.
             Also detects when user deletes any part of a paste marker -
             the entire marker block is wiped from the buffer.
+            URLs are never collapsed — they paste verbatim.
+            Collapse threshold: 20+ characters.
             """
             text = buf.text
 
@@ -7251,9 +7253,13 @@ class HermesCLI:
             newlines_added = line_count - _prev_newline_count[0]
             _prev_newline_count[0] = line_count
             is_paste = chars_added > 1 or newlines_added >= 4
-            # Collapse all pastes of 5+ lines, unless the pasted content
-            # itself starts with / (bypass lets full slash commands paste verbatim)
-            if is_paste and line_count >= 5 and not text.strip().startswith('/'):
+            # URL detection — never collapse URLs
+            import re as _re
+            URL_RE = _re.compile(r'https?://\S+')
+            is_url = bool(URL_RE.search(text)) if is_paste else False
+            # Collapse all pastes of 20+ chars, unless the pasted content
+            # is a URL (URLs should always paste verbatim)
+            if is_paste and len(text) >= 20 and not is_url:
                 _paste_counter[0] += 1
                 paste_id = str(_paste_counter[0])
                 # Store full content in memory (no temp file)
@@ -7262,10 +7268,7 @@ class HermesCLI:
                 # Insert compact marker — preserves existing buffer content
                 # so subsequent pastes don't overwrite previous ones
                 _paste_just_collapsed[0] = True
-                if line_count == 0:
-                    placeholder = f"[Pasted text #{paste_id} +{len(text)} chars]"
-                else:
-                    placeholder = f"[Pasted text #{paste_id} +{line_count + 1} lines]"
+                placeholder = f"[Pasted text #{paste_id} +{len(text)} chars]"
                 buf.text = buf.text + placeholder
                 buf.cursor_position = len(buf.text)
 
