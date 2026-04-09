@@ -7246,7 +7246,9 @@ class HermesCLI:
                 return
 
             # --- Normal input routing ---
-            text = event.app.current_buffer.text.strip()
+            # Expand any [Pasted text #N +X lines] markers to real content before submit
+            raw_text = event.app.current_buffer.text
+            text = _reconstruct_pastes(raw_text).strip()
             has_images = bool(self._attached_images)
             if text or has_images:
                 # Snapshot and clear attached images
@@ -7559,9 +7561,11 @@ class HermesCLI:
             triggers this with the pasted text.  We also check the
             clipboard for an image on every paste event.
 
-            Large pastes (5+ lines) are collapsed to a file reference
-            placeholder while preserving any existing user text in the
-            buffer.
+            Large pastes (20+ chars) are collapsed to a compact marker
+            placeholder while preserving the full pasted text in memory.
+            The real content is restored at submit time.
+            URLs are NEVER collapsed — they paste verbatim.
+            Commands starting with / are still collapsed if >= 20 chars.
             """
             pasted_text = event.data or ""
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
@@ -7570,20 +7574,25 @@ class HermesCLI:
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
-                line_count = pasted_text.count('\n')
+                import re
+                URL_RE = re.compile(r'https?://\S+')
+                is_url = bool(URL_RE.search(pasted_text))
                 buf = event.current_buffer
-                if line_count >= 5 and not buf.text.strip().startswith('/'):
+                # Bypass collapsing only for URLs — they should always paste verbatim.
+                # Do NOT bypass just because the buffer has existing content —
+                # that existing content might be a [Pasted text #N] marker and
+                # the new paste is regular text that should still be collapsed.
+                will_collapse = len(pasted_text) >= 20 and not is_url
+                if will_collapse:
                     _paste_counter[0] += 1
-                    paste_dir = _hermes_home / "pastes"
-                    paste_dir.mkdir(parents=True, exist_ok=True)
-                    paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
-                    paste_file.write_text(pasted_text, encoding="utf-8")
-                    placeholder = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
-                    prefix = ""
-                    if buf.cursor_position > 0 and buf.text[buf.cursor_position - 1] != '\n':
-                        prefix = "\n"
+                    paste_id = str(_paste_counter[0])
+                    # Store full content in memory (no temp file)
+                    _paste_store[paste_id] = pasted_text
+                    _active_paste_ids.add(paste_id)
+                    placeholder = f"[Pasted text #{paste_id} +{len(pasted_text)} chars]"
                     _paste_just_collapsed[0] = True
-                    buf.insert_text(prefix + placeholder)
+                    buf.text = buf.text + placeholder
+                    buf.cursor_position = len(buf.text)
                 else:
                     buf.insert_text(pasted_text)
 
@@ -7677,48 +7686,119 @@ class HermesCLI:
 
         input_area.window.height = _input_height
 
-        # Paste collapsing: detect large pastes and save to temp file
+        # Paste collapsing: detect large pastes and collapse to a compact marker.
+        # Full pasted text is stored in memory and restored at submit time.
         _paste_counter = [0]
         _prev_text_len = [0]
         _prev_newline_count = [0]
         _paste_just_collapsed = [False]
+        _paste_store: dict[str, str] = {}  # paste_id -> full pasted text
+        _active_paste_ids: set[str] = set()  # paste_ids currently in the buffer
+
+        def _reconstruct_pastes(text: str) -> str:
+            """Replace any [Pasted text #N +X lines/chars] markers with stored content.
+            Called at submit time (Enter) so the agent sees the full pasted text."""
+            if not _active_paste_ids:
+                return text
+            result = text
+            # Sort by length descending so longer markers (more specific) are
+            # replaced before shorter ones if they overlap
+            sorted_ids = sorted(_active_paste_ids, key=len, reverse=True)
+            for pid in sorted_ids:
+                stored = _paste_store.get(pid, "")
+                if stored:
+                    line_count = stored.count('\n')
+                    if line_count == 0:
+                        full_marker = f"[Pasted text #{pid} +{len(stored)} chars]"
+                    else:
+                        full_marker = f"[Pasted text #{pid} +{line_count + 1} lines]"
+                else:
+                    full_marker = f"[Pasted text #{pid} +1 lines]"
+                if full_marker in result:
+                    result = result.replace(full_marker, stored, 1)
+                    _paste_store.pop(pid, None)
+                    _active_paste_ids.discard(pid)
+            # Reset paste counter when all pastes are reconstructed (submitted)
+            if not _active_paste_ids:
+                _paste_counter[0] = 0
+            return result
 
         def _on_text_changed(buf):
-            """Detect large pastes and collapse them to a file reference.
-
-            When bracketed paste is available, handle_paste collapses
-            large pastes directly.  This handler is a fallback for
-            terminals without bracketed paste support.
-
-            Two heuristics (either triggers collapse):
-            1. Many characters added at once (chars_added > 1) — works
-               when the terminal delivers the paste in one event-loop tick.
-            2. Newline count jumped by 4+ in a single text-change event —
-               catches terminals that feed characters individually but
-               still batch newlines.  Alt+Enter only adds 1 newline per
-               event so it never triggers this.
+            """Detect large pastes and collapse them to a compact marker.
+            Also detects when user deletes any part of a paste marker -
+            the entire marker block is wiped from the buffer.
+            URLs are never collapsed — they paste verbatim.
+            Collapse threshold: 20+ characters.
             """
             text = buf.text
-            chars_added = len(text) - _prev_text_len[0]
-            _prev_text_len[0] = len(text)
+
+            # Guard: suppress processing immediately after a collapse or deletion.
             if _paste_just_collapsed[0]:
                 _paste_just_collapsed[0] = False
+                _prev_text_len[0] = len(text)
                 _prev_newline_count[0] = text.count('\n')
                 return
+
+            # --- Deletion detection: wipe marker if ANY part of it was deleted ---
+            for pid in list(_active_paste_ids):
+                stored = _paste_store.get(pid, "")
+                if stored:
+                    line_count = stored.count('\n')
+                    if line_count == 0:
+                        full_marker = f"[Pasted text #{pid} +{len(stored)} chars]"
+                    else:
+                        full_marker = f"[Pasted text #{pid} +{line_count + 1} lines]"
+                else:
+                    full_marker = f"[Pasted text #{pid} +1 lines]"
+                if full_marker not in text:
+                    # Marker partially or fully deleted — wipe entire block.
+                    _paste_just_collapsed[0] = True
+                    if full_marker in text:
+                        result = text.replace(full_marker, "", 1).rstrip("\n")
+                    else:
+                        marker_prefix = f"[Pasted text #{pid}"
+                        marker_line_start = text.find(marker_prefix)
+                        if marker_line_start != -1:
+                            line_end = text.find("\n", marker_line_start)
+                            if line_end == -1:
+                                line_end = len(text)
+                            result = text[:marker_line_start] + text[line_end:]
+                        else:
+                            result = text
+                    buf.text = result.rstrip("\n")
+                    buf.cursor_position = len(buf.text)
+                    _paste_store.pop(pid, None)
+                    _active_paste_ids.discard(pid)
+                    if not _active_paste_ids:
+                        _paste_counter[0] = 0
+                    _prev_text_len[0] = len(buf.text)
+                    _prev_newline_count[0] = buf.text.count('\n')
+                    return
+
+            # --- Fallback paste detection (terminals without bracketed paste) ---
+            chars_added = len(text) - _prev_text_len[0]
+            _prev_text_len[0] = len(text)
             line_count = text.count('\n')
             newlines_added = line_count - _prev_newline_count[0]
             _prev_newline_count[0] = line_count
             is_paste = chars_added > 1 or newlines_added >= 4
-            if line_count >= 5 and is_paste and not text.startswith('/'):
+            # URL detection — never collapse URLs
+            import re as _re
+            URL_RE = _re.compile(r'https?://\S+')
+            is_url = bool(URL_RE.search(text)) if is_paste else False
+            # Collapse all pastes of 20+ chars, unless the pasted content
+            # is a URL (URLs should always paste verbatim)
+            if is_paste and len(text) >= 20 and not is_url:
                 _paste_counter[0] += 1
-                # Save to temp file
-                paste_dir = _hermes_home / "pastes"
-                paste_dir.mkdir(parents=True, exist_ok=True)
-                paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
-                paste_file.write_text(text, encoding="utf-8")
-                # Replace buffer with compact reference
+                paste_id = str(_paste_counter[0])
+                # Store full content in memory (no temp file)
+                _paste_store[paste_id] = text
+                _active_paste_ids.add(paste_id)
+                # Insert compact marker — preserves existing buffer content
+                # so subsequent pastes don't overwrite previous ones
                 _paste_just_collapsed[0] = True
-                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
+                placeholder = f"[Pasted text #{paste_id} +{len(text)} chars]"
+                buf.text = buf.text + placeholder
                 buf.cursor_position = len(buf.text)
 
         input_area.buffer.on_text_changed += _on_text_changed
