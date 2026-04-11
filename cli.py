@@ -8528,22 +8528,30 @@ class HermesCLI:
             # the row on narrow/mobile screens where every line matters.
             return cli_ref._agent_spacer_height()
 
+        def _format_elapsed(t0: float) -> str:
+            """Format a monotonic timestamp as a live elapsed string."""
+            import time as _time
+            elapsed = _time.monotonic() - t0
+            if elapsed >= 60:
+                _m, _s = int(elapsed // 60), int(elapsed % 60)
+                return f"{_m}m {_s}s"
+            return f"{elapsed:.1f}s"
+
         def get_spinner_text():
             txt = cli_ref._spinner_text
-            if not txt:
-                return []
-            # Append live elapsed timer when a tool is running
+            # Decide which live timer to show: tool > prompt
             t0 = cli_ref._tool_start_time
             if t0 > 0:
-                import time as _time
-                elapsed = _time.monotonic() - t0
-                if elapsed >= 60:
-                    _m, _s = int(elapsed // 60), int(elapsed % 60)
-                    elapsed_str = f"{_m}m {_s}s"
-                else:
-                    elapsed_str = f"{elapsed:.1f}s"
+                elapsed_str = _format_elapsed(t0)
                 return [('class:hint', f'  {txt}  ({elapsed_str})')]
-            return [('class:hint', f'  {txt}')]
+            # No tool running — show prompt elapsed if agent is thinking
+            t0 = cli_ref._prompt_start_time
+            if t0 is not None and t0 > 0:
+                elapsed_str = _format_elapsed(t0)
+                return [('class:hint', f'  {txt}  ({elapsed_str})')]
+            if txt:
+                return [('class:hint', f'  {txt}')]
+            return []
 
         def get_spinner_height():
             return cli_ref._spinner_widget_height()
