@@ -56,6 +56,7 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 import threading
 import queue
+import time
 
 from agent.usage_pricing import (
     CanonicalUsage,
@@ -1762,6 +1763,9 @@ class HermesCLI:
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
         self._resumed = False
+        # Per-prompt elapsed timer (lifecycle: start on turn begin, freeze on turn complete)
+        self._prompt_start_time: float | None = None
+        self._prompt_duration: float = 0.0
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
         try:
@@ -1857,6 +1861,21 @@ class HermesCLI:
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
+    @staticmethod
+    def _format_prompt_elapsed(seconds: float) -> str:
+        """Format per-prompt elapsed time in compact form (44s / 3m 12s / 1h 23m)."""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        minutes = seconds / 60
+        if minutes < 60:
+            return f"{minutes:.0f}m"
+        hours = minutes / 60
+        if hours < 24:
+            remaining_min = int(minutes % 60)
+            return f"{int(hours)}h {remaining_min}m" if remaining_min else f"{int(hours)}h"
+        days = hours / 24
+        return f"{days:.1f}d"
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -1871,10 +1890,16 @@ class HermesCLI:
             model_short = f"{model_short[:23]}..."
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        # Per-prompt elapsed: frozen after turn, live while thinking
+        if self._prompt_start_time is not None:
+            prompt_elapsed = max(0.0, time.time() - self._prompt_start_time)
+        else:
+            prompt_elapsed = self._prompt_duration
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
             "duration": format_duration_compact(elapsed_seconds),
+            "prompt_elapsed": prompt_elapsed,
             "context_tokens": 0,
             "context_length": None,
             "context_percent": None,
@@ -2064,6 +2089,7 @@ class HermesCLI:
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
+                    ("class:status-bar-dim", " · " + self._format_prompt_elapsed(snapshot["prompt_elapsed"])),
                     ("class:status-bar", " "),
                 ]
             else:
@@ -2077,6 +2103,7 @@ class HermesCLI:
                         (self._status_bar_context_style(percent), percent_label),
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
+                        ("class:status-bar-dim", " · " + self._format_prompt_elapsed(snapshot["prompt_elapsed"])),
                         ("class:status-bar", " "),
                     ]
                 else:
@@ -2099,6 +2126,7 @@ class HermesCLI:
                         (bar_style, percent_label),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
+                        ("class:status-bar-dim", " │ " + self._format_prompt_elapsed(snapshot["prompt_elapsed"])),
                         ("class:status-bar", " "),
                     ]
 
@@ -7244,6 +7272,8 @@ class HermesCLI:
                     }
 
             # Start agent in background thread
+            self._prompt_start_time = time.time()
+            self._prompt_duration = 0.0
             agent_thread = threading.Thread(target=run_agent)
             agent_thread.start()
 
@@ -7294,6 +7324,11 @@ class HermesCLI:
                     agent_thread.join(0.1)
 
             agent_thread.join()  # Ensure agent thread completes
+
+            # Freeze per-prompt timer
+            if self._prompt_start_time is not None:
+                self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
+                self._prompt_start_time = None
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
