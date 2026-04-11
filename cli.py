@@ -2094,23 +2094,36 @@ class HermesCLI:
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
 
+            # Live timer: compute directly from _prompt_start_time, same source as spinner
+            import time as _time
+            _t0 = self._prompt_start_time
+            if _t0 is not None and _t0 > 0:
+                _elapsed = _time.monotonic() - _t0
+                _elapsed_str = f"{int(_elapsed)}s" if _elapsed < 60 else f"{int(_elapsed // 60)}m {int(_elapsed % 60)}s"
+                _is_live = True
+            elif snapshot["prompt_elapsed"] > 0:
+                _elapsed = snapshot["prompt_elapsed"]
+                _elapsed_str = self._format_prompt_elapsed(_elapsed)
+                _is_live = False
+            else:
+                _elapsed_str = "0s"
+                _is_live = False
+
             if width < 52:
-                timer_emoji = "⏱️" if snapshot.get("is_timing", False) else "⏺️"
-                timer_text = self._format_prompt_elapsed(snapshot["prompt_elapsed"])
+                timer_emoji = "⏱️" if _is_live else "⏺️"
                 frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
-                    ("class:status-bar-dim", " · " + timer_emoji + " " + timer_text),
+                    ("class:status-bar-dim", " · " + timer_emoji + " " + _elapsed_str),
                     ("class:status-bar", " "),
                 ]
             else:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
-                    timer_emoji = "⏱️" if snapshot.get("is_timing", False) else "⏺️"
-                    timer_text = self._format_prompt_elapsed(snapshot["prompt_elapsed"])
+                    timer_emoji = "⏱️" if _is_live else "⏺️"
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -2118,7 +2131,7 @@ class HermesCLI:
                         (self._status_bar_context_style(percent), percent_label),
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
-                        ("class:status-bar-dim", " · " + timer_emoji + " " + timer_text),
+                        ("class:status-bar-dim", " · " + timer_emoji + " " + _elapsed_str),
                         ("class:status-bar", " "),
                     ]
                 else:
@@ -2130,8 +2143,7 @@ class HermesCLI:
                         context_label = "ctx --"
 
                     bar_style = self._status_bar_context_style(percent)
-                    timer_emoji = "⏱️" if snapshot.get("is_timing", False) else "⏺️"
-                    timer_text = self._format_prompt_elapsed(snapshot["prompt_elapsed"])
+                    timer_emoji = "⏱️" if _is_live else "⏺️"
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -2143,7 +2155,7 @@ class HermesCLI:
                         (bar_style, percent_label),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
-                        ("class:status-bar-dim", " │ " + timer_emoji + " " + timer_text),
+                        ("class:status-bar-dim", " │ " + timer_emoji + " " + _elapsed_str),
                         ("class:status-bar", " "),
                     ]
 
