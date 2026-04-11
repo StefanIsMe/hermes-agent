@@ -1838,7 +1838,7 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
-    def _invalidate(self, min_interval: float = 0.25) -> None:
+    def _invalidate(self, min_interval: float = 0.1) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
         import time as _time
         now = _time.monotonic()
@@ -1864,19 +1864,22 @@ class HermesCLI:
 
     @staticmethod
     def _format_prompt_elapsed(seconds: float) -> str:
-        """Format per-prompt elapsed time in compact form (44s / 3m 12s / 1h 23m)."""
+        """Format per-prompt elapsed time in compact form (44s / 1m 12s / 1h 23m / 1d 2h 15m)."""
         seconds = max(0.0, seconds)
-        if seconds < 60:
-            return f"{int(seconds)}s"
-        minutes = seconds / 60
-        if minutes < 60:
-            return f"{int(minutes)}m"
-        hours = minutes / 60
-        if hours < 24:
-            remaining_min = int(minutes % 60)
-            return f"{int(hours)}h {remaining_min}m" if remaining_min else f"{int(hours)}h"
-        days = hours / 24
-        return f"{days:.1f}d"
+        total_seconds = int(seconds)
+        if total_seconds < 60:
+            return f"{total_seconds}s"
+        total_minutes = total_seconds // 60
+        if total_minutes < 60:
+            s = total_seconds % 60
+            return f"{total_minutes}m {s}s" if s else f"{total_minutes}m"
+        total_hours = total_minutes // 60
+        if total_hours < 24:
+            m = total_minutes % 60
+            return f"{total_hours}h {m}m" if m else f"{total_hours}h"
+        total_days = total_hours // 24
+        h = total_hours % 24
+        return f"{total_days}d {h}h" if h else f"{total_days}d"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
