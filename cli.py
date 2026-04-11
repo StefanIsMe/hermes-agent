@@ -1895,11 +1895,14 @@ class HermesCLI:
             model_short = f"{model_short[:23]}..."
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
-        # Per-prompt elapsed: frozen after turn, live while thinking
-        # Use monotonic() — immune to system clock adjustments that cause
-        # time.time() to skip/jump and make the stopwatch increment in chunks
-        if self._prompt_start_time is not None:
-            prompt_elapsed = max(0.0, time.monotonic() - self._prompt_start_time)
+        # Per-prompt elapsed: frozen after turn, live while thinking.
+        # Capture _prompt_start_time into a local BEFORE computing elapsed so
+        # the full snapshot is consistent — prevents torn reads when the agent
+        # thread updates _prompt_start_time between the is-None check and the
+        # monotonic() subtraction (which would cause jumping/skipped values).
+        _start = self._prompt_start_time
+        if _start is not None:
+            prompt_elapsed = max(0.0, time.monotonic() - _start)
         else:
             prompt_elapsed = self._prompt_duration
         snapshot = {
