@@ -8788,21 +8788,18 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._voice_mode),
         )
 
-        status_bar = ConditionalContainer(
-            Window(
-                content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
-                height=1,
-                # Prevent fragments that overflow the terminal width from
-                # wrapping onto a second line, which causes the status bar to
-                # appear duplicated (one full + one partial row) during long
-                # sessions, especially on SSH where shutil.get_terminal_size
-                # may return stale values.  _get_status_bar_fragments now reads
-                # width from prompt_toolkit's own output object, so fragments
-                # will always fit; wrap_lines=False is the belt-and-suspenders
-                # guard against any future width mismatch.
-                wrap_lines=False,
-            ),
-            filter=Condition(lambda: cli_ref._status_bar_visible),
+        status_bar = Window(
+            content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
+            height=1,
+            # Prevent fragments that overflow the terminal width from
+            # wrapping onto a second line, which causes the status bar to
+            # appear duplicated (one full + one partial row) during long
+            # sessions, especially on SSH where shutil.get_terminal_size
+            # may return stale values.  _get_status_bar_fragments now reads
+            # width from prompt_toolkit's own output object, so fragments
+            # will always fit; wrap_lines=False is the belt-and-suspenders
+            # guard against any future width mismatch.
+            wrap_lines=False,
         )
 
         # Allow wrapper CLIs to register extra keybindings.
