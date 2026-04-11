@@ -1766,6 +1766,7 @@ class HermesCLI:
         # Per-prompt elapsed timer (lifecycle: start on turn begin, freeze on turn complete)
         self._prompt_start_time: float | None = None
         self._prompt_duration: float = 0.0
+        self._is_timing: bool = False
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
         try:
@@ -1864,11 +1865,12 @@ class HermesCLI:
     @staticmethod
     def _format_prompt_elapsed(seconds: float) -> str:
         """Format per-prompt elapsed time in compact form (44s / 3m 12s / 1h 23m)."""
+        seconds = max(0.0, seconds)
         if seconds < 60:
-            return f"{seconds:.0f}s"
+            return f"{int(seconds)}s"
         minutes = seconds / 60
         if minutes < 60:
-            return f"{minutes:.0f}m"
+            return f"{int(minutes)}m"
         hours = minutes / 60
         if hours < 24:
             remaining_min = int(minutes % 60)
@@ -1891,8 +1893,10 @@ class HermesCLI:
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         # Per-prompt elapsed: frozen after turn, live while thinking
+        # Use monotonic() — immune to system clock adjustments that cause
+        # time.time() to skip/jump and make the stopwatch increment in chunks
         if self._prompt_start_time is not None:
-            prompt_elapsed = max(0.0, time.time() - self._prompt_start_time)
+            prompt_elapsed = max(0.0, time.monotonic() - self._prompt_start_time)
         else:
             prompt_elapsed = self._prompt_duration
         snapshot = {
@@ -1900,6 +1904,7 @@ class HermesCLI:
             "model_short": model_short,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": prompt_elapsed,
+            "is_timing": self._is_timing,
             "context_tokens": 0,
             "context_length": None,
             "context_percent": None,
@@ -2084,18 +2089,22 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             if width < 52:
+                timer_emoji = "⏱️" if snapshot.get("is_timing", False) else "⏺️"
+                timer_text = self._format_prompt_elapsed(snapshot["prompt_elapsed"])
                 frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
-                    ("class:status-bar-dim", " · " + self._format_prompt_elapsed(snapshot["prompt_elapsed"])),
+                    ("class:status-bar-dim", " · " + timer_emoji + " " + timer_text),
                     ("class:status-bar", " "),
                 ]
             else:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
+                    timer_emoji = "⏱️" if snapshot.get("is_timing", False) else "⏺️"
+                    timer_text = self._format_prompt_elapsed(snapshot["prompt_elapsed"])
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -2103,7 +2112,7 @@ class HermesCLI:
                         (self._status_bar_context_style(percent), percent_label),
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
-                        ("class:status-bar-dim", " · " + self._format_prompt_elapsed(snapshot["prompt_elapsed"])),
+                        ("class:status-bar-dim", " · " + timer_emoji + " " + timer_text),
                         ("class:status-bar", " "),
                     ]
                 else:
@@ -2115,6 +2124,8 @@ class HermesCLI:
                         context_label = "ctx --"
 
                     bar_style = self._status_bar_context_style(percent)
+                    timer_emoji = "⏱️" if snapshot.get("is_timing", False) else "⏺️"
+                    timer_text = self._format_prompt_elapsed(snapshot["prompt_elapsed"])
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -2126,7 +2137,7 @@ class HermesCLI:
                         (bar_style, percent_label),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
-                        ("class:status-bar-dim", " │ " + self._format_prompt_elapsed(snapshot["prompt_elapsed"])),
+                        ("class:status-bar-dim", " │ " + timer_emoji + " " + timer_text),
                         ("class:status-bar", " "),
                     ]
 
@@ -7272,8 +7283,9 @@ class HermesCLI:
                     }
 
             # Start agent in background thread
-            self._prompt_start_time = time.time()
+            self._prompt_start_time = time.monotonic()
             self._prompt_duration = 0.0
+            self._is_timing = True
             agent_thread = threading.Thread(target=run_agent)
             agent_thread.start()
 
@@ -7327,8 +7339,9 @@ class HermesCLI:
 
             # Freeze per-prompt timer
             if self._prompt_start_time is not None:
-                self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
+                self._prompt_duration = max(0.0, time.monotonic() - self._prompt_start_time)
                 self._prompt_start_time = None
+                self._is_timing = False
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
