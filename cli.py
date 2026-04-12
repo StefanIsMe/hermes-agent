@@ -2094,23 +2094,19 @@ class HermesCLI:
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
 
-            # Live timer: compute directly from _prompt_start_time, same source as spinner
+            # Per-prompt elapsed timer — live while thinking, frozen after turn completes.
             import time as _time
             _t0 = self._prompt_start_time
             if _t0 is not None and _t0 > 0:
-                _elapsed = _time.monotonic() - _t0
-                _elapsed_str = f"{int(_elapsed)}s" if _elapsed < 60 else f"{int(_elapsed // 60)}m {int(_elapsed % 60)}s"
+                _elapsed = int(max(0.0, _time.monotonic() - _t0))
                 _is_live = True
-            elif snapshot["prompt_elapsed"] > 0:
-                _elapsed = snapshot["prompt_elapsed"]
-                _elapsed_str = self._format_prompt_elapsed(_elapsed)
-                _is_live = False
             else:
-                _elapsed_str = "0s"
+                _elapsed = int(snapshot["prompt_elapsed"])
                 _is_live = False
+            _elapsed_str = self._format_prompt_elapsed(_elapsed)
+            timer_emoji = "⏱️" if _is_live else "⏺️"
 
             if width < 52:
-                timer_emoji = "⏱️" if _is_live else "⏺️"
                 frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
@@ -2123,7 +2119,6 @@ class HermesCLI:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
-                    timer_emoji = "⏱️" if _is_live else "⏺️"
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -2143,7 +2138,6 @@ class HermesCLI:
                         context_label = "ctx --"
 
                     bar_style = self._status_bar_context_style(percent)
-                    timer_emoji = "⏱️" if _is_live else "⏺️"
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -8543,11 +8537,21 @@ class HermesCLI:
         def _format_elapsed(t0: float) -> str:
             """Format a monotonic timestamp as a live elapsed string."""
             import time as _time
-            elapsed = _time.monotonic() - t0
-            if elapsed >= 60:
-                _m, _s = int(elapsed // 60), int(elapsed % 60)
-                return f"{_m}m {_s}s"
-            return f"{elapsed:.1f}s"
+            elapsed = max(0.0, _time.monotonic() - t0)
+            total_seconds = int(elapsed)
+            if total_seconds < 60:
+                return f"{total_seconds}s"
+            total_minutes = total_seconds // 60
+            if total_minutes < 60:
+                s = total_seconds % 60
+                return f"{total_minutes}m {s}s" if s else f"{total_minutes}m"
+            total_hours = total_minutes // 60
+            if total_hours < 24:
+                m = total_minutes % 60
+                return f"{total_hours}h {m}m" if m else f"{total_hours}h"
+            days = total_hours // 24
+            h = total_hours % 24
+            return f"{days}d {h}h" if h else f"{days}d"
 
         def get_spinner_text():
             txt = cli_ref._spinner_text
@@ -8968,7 +8972,20 @@ class HermesCLI:
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()
-        
+
+        # Dedicated timer thread — guarantees 1-second status bar ticks while
+        # the agent is running, regardless of interrupt polling or spinner state.
+        # This is the ONLY reliable refresh for the elapsed stopwatch display.
+        def timer_loop():
+            import time as _time
+            while not self._should_exit:
+                if self._prompt_start_time is not None and self._app:
+                    self._invalidate(min_interval=0.0)
+                _time.sleep(1.0)
+
+        timer_thread = threading.Thread(target=timer_loop, daemon=True)
+        timer_thread.start()
+
         # Background thread to process inputs and run agent
         def process_loop():
             while not self._should_exit:
