@@ -1764,7 +1764,9 @@ class HermesCLI:
         self.session_start = datetime.now()
         self._resumed = False
         # Per-prompt elapsed timer (lifecycle: start on turn begin, freeze on turn complete)
-        self._prompt_start_time: float | None = None
+        # Uses datetime.now() (same clock as session_start) to prevent drift between
+        # session timer and prompt timer — both always agree on elapsed time.
+        self._prompt_start_time = None  # datetime when current prompt started, or None
         self._prompt_duration: float = 0.0
         self._is_timing: bool = False
         # Initialize SQLite session store early so /title works before first message
@@ -1896,13 +1898,9 @@ class HermesCLI:
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         # Per-prompt elapsed: frozen after turn, live while thinking.
-        # Capture _prompt_start_time into a local BEFORE computing elapsed so
-        # the full snapshot is consistent — prevents torn reads when the agent
-        # thread updates _prompt_start_time between the is-None check and the
-        # monotonic() subtraction (which would cause jumping/skipped values).
         _start = self._prompt_start_time
         if _start is not None:
-            prompt_elapsed = max(0.0, time.monotonic() - _start)
+            prompt_elapsed = max(0.0, (datetime.now() - _start).total_seconds())
         else:
             prompt_elapsed = self._prompt_duration
         snapshot = {
@@ -2095,10 +2093,9 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             # Per-prompt elapsed timer — live while thinking, frozen after turn completes.
-            import time as _time
             _t0 = self._prompt_start_time
-            if _t0 is not None and _t0 > 0:
-                _elapsed = int(max(0.0, _time.monotonic() - _t0))
+            if _t0 is not None:
+                _elapsed = int(max(0.0, (datetime.now() - _t0).total_seconds()))
                 _is_live = True
             else:
                 _elapsed = int(snapshot["prompt_elapsed"])
@@ -7295,7 +7292,7 @@ class HermesCLI:
                     }
 
             # Start agent in background thread
-            self._prompt_start_time = time.monotonic()
+            self._prompt_start_time = datetime.now()
             self._prompt_duration = 0.0
             self._is_timing = True
             agent_thread = threading.Thread(target=run_agent)
@@ -7351,7 +7348,7 @@ class HermesCLI:
 
             # Freeze per-prompt timer
             if self._prompt_start_time is not None:
-                self._prompt_duration = max(0.0, time.monotonic() - self._prompt_start_time)
+                self._prompt_duration = max(0.0, (datetime.now() - self._prompt_start_time).total_seconds())
                 self._prompt_start_time = None
                 self._is_timing = False
 
@@ -8562,8 +8559,15 @@ class HermesCLI:
                 return [('class:hint', f'  {txt}  ({elapsed_str})')]
             # No tool running — show prompt elapsed if agent is thinking
             t0 = cli_ref._prompt_start_time
-            if t0 is not None and t0 > 0:
-                elapsed_str = _format_elapsed(t0)
+            if t0 is not None:
+                elapsed = max(0.0, (datetime.now() - t0).total_seconds())
+                total_seconds = int(elapsed)
+                if total_seconds < 60:
+                    elapsed_str = f"{total_seconds}s"
+                else:
+                    total_minutes = total_seconds // 60
+                    s = total_seconds % 60
+                    elapsed_str = f"{total_minutes}m {s}s" if s else f"{total_minutes}m"
                 return [('class:hint', f'  {txt}  ({elapsed_str})')]
             if txt:
                 return [('class:hint', f'  {txt}')]
