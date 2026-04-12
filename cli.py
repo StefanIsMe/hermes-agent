@@ -1876,14 +1876,13 @@ class HermesCLI:
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
-    def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float) -> Optional[str]:
+    def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float) -> str:
         """Format per-prompt elapsed time for the status bar.
 
-        Returns None when no turn is in progress and no duration is frozen
-        (i.e., before the first prompt of the session).
+        Always returns a string — shows 0s on fresh start before first turn.
         """
         if prompt_start_time is None and prompt_duration == 0.0:
-            return None
+            return "0s"
         elapsed = time.time() - prompt_start_time if prompt_start_time is not None else prompt_duration
         return format_duration_compact(max(0.0, elapsed))
 
