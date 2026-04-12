@@ -8909,6 +8909,7 @@ class HermesCLI:
             style=style,
             full_screen=False,
             mouse_support=False,
+            refresh_interval=1,  # Auto-invalidate every 1s for live timer display
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         self._app = app  # Store reference for clarify_callback
@@ -8976,19 +8977,6 @@ class HermesCLI:
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()
-
-        # Dedicated timer thread — guarantees 1-second status bar ticks while
-        # the agent is running, regardless of interrupt polling or spinner state.
-        # This is the ONLY reliable refresh for the elapsed stopwatch display.
-        def timer_loop():
-            import time as _time
-            while not self._should_exit:
-                if self._prompt_start_time is not None and self._app:
-                    self._invalidate(min_interval=0.0)
-                _time.sleep(1.0)
-
-        timer_thread = threading.Thread(target=timer_loop, daemon=True)
-        timer_thread.start()
 
         # Background thread to process inputs and run agent
         def process_loop():
