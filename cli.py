@@ -1876,47 +1876,16 @@ class HermesCLI:
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
-    def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
+    def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float) -> Optional[str]:
         """Format per-prompt elapsed time for the status bar.
 
-        Always returns a string (never None) — shows 0s on fresh start.
-        Keeps seconds visible at all scales so the user can see it ticking.
-        Prepends a visual indicator: ⏱️ (live/running) or 🕐 (frozen/done).
-
-        Examples:
-            🕐 0s         — fresh session, no turn yet
-            ⏱️ 44s        — 44 seconds into a live turn
-            🕐 3m 12s     — turn completed in 3 min 12 sec
-            ⏱️ 1h 23m 45s — live, 1 hour 23 minutes 45 seconds
-            🕐 2d 5h 13m  — frozen duration from a marathon session
+        Returns None when no turn is in progress and no duration is frozen
+        (i.e., before the first prompt of the session).
         """
         if prompt_start_time is None and prompt_duration == 0.0:
-            return "🕐 0s"
-
+            return None
         elapsed = time.time() - prompt_start_time if prompt_start_time is not None else prompt_duration
-        elapsed = max(0.0, elapsed)
-
-        days = int(elapsed // 86400)
-        remaining = elapsed % 86400
-        hours = int(remaining // 3600)
-        remaining = remaining % 3600
-        minutes = int(remaining // 60)
-        seconds = int(remaining % 60)
-
-        if days > 0:
-            if hours or minutes:
-                time_str = f"{days}d {hours}h {minutes}m" if minutes else f"{days}d {hours}h"
-            else:
-                time_str = f"{days}d"
-        elif hours > 0:
-            time_str = f"{hours}h {minutes}m {seconds}s" if seconds else f"{hours}h {minutes}m" if minutes else f"{hours}h"
-        elif minutes > 0:
-            time_str = f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
-        else:
-            time_str = f"{int(elapsed)}s"
-
-        emoji = "⏱️" if live else "🕐"
-        return f"{emoji} {time_str}"
+        return format_duration_compact(max(0.0, elapsed))
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
@@ -1939,7 +1908,6 @@ class HermesCLI:
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
                 getattr(self, "_prompt_duration", 0.0),
-                live=getattr(self, "_prompt_start_time", None) is not None,
             ),
             "context_tokens": 0,
             "context_length": None,
@@ -9303,7 +9271,6 @@ class HermesCLI:
             style=style,
             full_screen=False,
             mouse_support=False,
-            refresh_interval=1,  # 1s tick so the per-prompt elapsed timer updates live
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         self._app = app  # Store reference for clarify_callback
