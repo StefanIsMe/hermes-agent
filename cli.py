@@ -1903,6 +1903,9 @@ class HermesCLI:
             prompt_elapsed = max(0.0, (datetime.now() - _start).total_seconds())
         else:
             prompt_elapsed = self._prompt_duration
+        # Clamp: prompt can NEVER exceed session duration (prompt happens within session).
+        # session_start can be reset by /new while _prompt_start_time keeps old value.
+        prompt_elapsed = min(prompt_elapsed, elapsed_seconds)
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
@@ -2095,7 +2098,8 @@ class HermesCLI:
             # Per-prompt elapsed timer — live while thinking, frozen after turn completes.
             _t0 = self._prompt_start_time
             if _t0 is not None:
-                _elapsed = int(max(0.0, (datetime.now() - _t0).total_seconds()))
+                _now = datetime.now()
+                _elapsed = int(max(0.0, (_now - _t0).total_seconds()))
                 _is_live = True
             else:
                 _elapsed = int(snapshot["prompt_elapsed"])
