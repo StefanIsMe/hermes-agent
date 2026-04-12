@@ -1876,7 +1876,7 @@ class HermesCLI:
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
-    def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float) -> str:
+    def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
         """Format per-prompt elapsed time for the status bar.
 
         Always returns a string — shows 0s on fresh start before first turn.
@@ -1884,9 +1884,11 @@ class HermesCLI:
             59s → 1m → 1m 1s → ... → 1m 59s → 2m → 2m 1s → ...
             59m 59s → 1h → 1h 0m 1s → ...
             23h 59m 59s → 1d → 1d 0h 1m → ...
+
+        Emoji prefix: ⏱️ when turn is live, 🕐 when frozen or fresh start.
         """
         if prompt_start_time is None and prompt_duration == 0.0:
-            return "0s"
+            return "🕐 0s"
         elapsed = time.time() - prompt_start_time if prompt_start_time is not None else prompt_duration
         elapsed = max(0.0, elapsed)
 
@@ -1898,12 +1900,16 @@ class HermesCLI:
         seconds = int(remaining % 60)
 
         if days > 0:
-            return f"{days}d {hours}h {minutes}m"
-        if hours > 0:
-            return f"{hours}h {minutes}m {seconds}s" if seconds else f"{hours}h {minutes}m"
-        if minutes > 0:
-            return f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
-        return f"{int(elapsed)}s"
+            time_str = f"{days}d {hours}h {minutes}m"
+        elif hours > 0:
+            time_str = f"{hours}h {minutes}m {seconds}s" if seconds else f"{hours}h {minutes}m"
+        elif minutes > 0:
+            time_str = f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
+        else:
+            time_str = f"{int(elapsed)}s"
+
+        emoji = "⏱️" if live else "🕐"
+        return f"{emoji} {time_str}"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
@@ -1926,6 +1932,7 @@ class HermesCLI:
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
                 getattr(self, "_prompt_duration", 0.0),
+                live=getattr(self, "_prompt_start_time", None) is not None,
             ),
             "context_tokens": 0,
             "context_length": None,
