@@ -9303,6 +9303,7 @@ class HermesCLI:
             style=style,
             full_screen=False,
             mouse_support=False,
+            refresh_interval=1,  # 1s tick so the per-prompt elapsed timer updates live
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         self._app = app  # Store reference for clarify_callback
