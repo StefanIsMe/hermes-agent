@@ -1908,7 +1908,7 @@ class HermesCLI:
         else:
             time_str = f"{int(elapsed)}s"
 
-        emoji = "⏱️" if live else "🕐"
+        emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
