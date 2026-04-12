@@ -1880,11 +1880,30 @@ class HermesCLI:
         """Format per-prompt elapsed time for the status bar.
 
         Always returns a string — shows 0s on fresh start before first turn.
+        Keeps seconds visible at all scales so it increments smoothly:
+            59s → 1m → 1m 1s → ... → 1m 59s → 2m → 2m 1s → ...
+            59m 59s → 1h → 1h 0m 1s → ...
+            23h 59m 59s → 1d → 1d 0h 1m → ...
         """
         if prompt_start_time is None and prompt_duration == 0.0:
             return "0s"
         elapsed = time.time() - prompt_start_time if prompt_start_time is not None else prompt_duration
-        return format_duration_compact(max(0.0, elapsed))
+        elapsed = max(0.0, elapsed)
+
+        days = int(elapsed // 86400)
+        remaining = elapsed % 86400
+        hours = int(remaining // 3600)
+        remaining = remaining % 3600
+        minutes = int(remaining // 60)
+        seconds = int(remaining % 60)
+
+        if days > 0:
+            return f"{days}d {hours}h {minutes}m"
+        if hours > 0:
+            return f"{hours}h {minutes}m {seconds}s" if seconds else f"{hours}h {minutes}m"
+        if minutes > 0:
+            return f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
+        return f"{int(elapsed)}s"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
