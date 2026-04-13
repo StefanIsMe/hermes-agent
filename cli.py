@@ -8918,6 +8918,7 @@ class HermesCLI:
             URLs are never collapsed — they paste verbatim.
             Collapse threshold: 20+ characters.
             """
+            import re as _re
             text = buf.text
 
             # Guard: suppress processing immediately after a collapse or deletion.
@@ -8965,7 +8966,6 @@ class HermesCLI:
             _prev_newline_count[0] = line_count
             is_paste = chars_added > 1 or newlines_added >= 4
             # URL detection — never collapse URLs
-            import re as _re
             URL_RE = _re.compile(r'https?://\S+')
             is_url = bool(URL_RE.search(text)) if is_paste else False
             # Collapse all pastes of 20+ chars, unless the pasted content

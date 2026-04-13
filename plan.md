@@ -1,32 +1,17 @@
-# Plan: OMO-Inspired Features for Hermes Agent
-## Branch: feat/omo-inspiration
+# Plan: Hashline Edit for Hermes Agent
+## Branch: feat/hashline-edit
 ## Started: 2026-04-13
 
-### Features
+### Feature
 
 1. **Hashline Edit Tool** — Content-hash anchored file edits
-   - Status: IN PROGRESS
+   - Status: DONE
    - File: `tools/hashline_edit.py`
-   - Tests: `tests/test_hashline_edit.py`
+   - Tests: `tests/test_hashline_auto.py`, `tests/test_omo_features.py`
+   - Plugin: `~/.hermes/plugins/hashline_auto/`
 
-2. **Category-Based Model Routing** — Auto-route to optimal model
-   - Status: PENDING
-   - Files: `agent/category_routing.py`, config integration
+### Removed (was on feat/omo-inspiration)
 
-3. **Enhanced Background Agent Manager** — Circuit breakers, error recovery
-   - Status: PENDING
-   - Files: `tools/background_manager.py`
-
-4. **Interview-Mode Planning** — Prometheus-style planning
-   - Status: PENDING
-   - Files: `tools/interview_planner.py`
-
-### Decisions
-- Using `hashlib.sha256` (Python stdlib) instead of Bun-specific APIs
-- Category routing config in `~/.hermes/config.yaml` under `categories:` key
-- Background manager wraps existing `delegate_tool.py` patterns
-- Interview planner is a standalone tool, not a hook
-
-### Verification
-- Each feature gets py_compile check + test file
-- Integration test: all 4 features importable together
+- Category Router (`agent/category_routing.py`) — removed
+- Background Agent Manager (`tools/background_manager.py`) — removed
+- Interview Planner (`tools/interview_planner.py`) — removed
