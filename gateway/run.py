@@ -79,6 +79,79 @@ from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
+# -------------------------------------------------------------------
+# Paste marker reconstruction — expand [Pasted text #N +X chars ↳file]
+# markers by reading persisted content from ~/.hermes/pastes/.
+#
+# The CLI smart-paste system collapses large pastes to compact markers
+# and (since the fix) persists the content to disk.  When a message
+# routes through the gateway (Telegram, Discord, etc.) the in-memory
+# paste store is inaccessible — so the gateway must reconstruct from
+# disk before forwarding to the agent.
+# -------------------------------------------------------------------
+_PASTE_MARKER_RE = re.compile(
+    r'\[Pasted text #(\d+) \+(\d+) (chars|lines)(?: ↳([^\]]+))?\]'
+)
+
+_PASTE_MAX_AGE_SECONDS = 86400  # 24 hours
+_paste_cleanup_last_run = 0.0
+
+def _cleanup_old_pastes() -> None:
+    """Remove paste files older than _PASTE_MAX_AGE_SECONDS.
+    Runs at most once per hour to avoid filesystem overhead."""
+    global _paste_cleanup_last_run
+    now = time.time()
+    if now - _paste_cleanup_last_run < 3600:
+        return
+    _paste_cleanup_last_run = now
+    _paste_dir = _hermes_home / "pastes"
+    try:
+        for f in _paste_dir.glob("paste_*.txt"):
+            try:
+                if now - f.stat().st_mtime > _PASTE_MAX_AGE_SECONDS:
+                    f.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def _reconstruct_paste_markers(text: str) -> str:
+    """Replace [Pasted text #N ...] markers with content from disk.
+
+    Supports two marker formats:
+    - New: [Pasted text #N +X chars ↳filename]  — direct file ref
+    - Legacy: [Pasted text #N +X chars]          — glob for paste_N_*.txt
+
+    Returns the original text if no markers found or files missing.
+    """
+    if "[Pasted text #" not in text:
+        return text
+    _cleanup_old_pastes()  # opportunistic cleanup
+    _paste_dir = _hermes_home / "pastes"
+    result = text
+    for m in _PASTE_MARKER_RE.finditer(result):
+        pid, _count, _unit, filename = m.group(1), m.group(2), m.group(3), m.group(4)
+        content = None
+        # 1. Try explicit filename from marker
+        if filename:
+            try:
+                p = _paste_dir / filename
+                if p.is_file():
+                    content = p.read_text(encoding="utf-8")
+            except Exception:
+                pass
+        # 2. Fallback: glob for most recent paste_N_*.txt
+        if content is None:
+            try:
+                matches = sorted(_paste_dir.glob(f"paste_{pid}_*.txt"), reverse=True)
+                if matches:
+                    content = matches[0].read_text(encoding="utf-8")
+            except Exception:
+                pass
+        if content:
+            result = result.replace(m.group(0), content, 1)
+    return result
+
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
 from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
@@ -8003,6 +8076,9 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            # Expand [Pasted text #N ...] markers from disk before sending to agent
+            if isinstance(message, str):
+                message = _reconstruct_paste_markers(message)
             try:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
