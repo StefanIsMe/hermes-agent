@@ -8869,25 +8869,41 @@ class HermesCLI:
 
         def _reconstruct_pastes(text: str) -> str:
             """Replace any [Pasted text #N +X lines/chars] markers with stored content.
-            Called at submit time (Enter) so the agent sees the full pasted text."""
-            if not _active_paste_ids:
-                return text
+            Called at submit time (Enter) so the agent sees the full pasted text.
+
+            Supports both the legacy format [Pasted text #N +X chars] and the new
+            format [Pasted text #N +X chars ↳filename].  Falls back to disk when
+            the in-memory _paste_store has been cleared (e.g. message routed
+            through gateway or session restarted).
+            """
+            import re as _re2
             result = text
-            # Sort by length descending so longer markers (more specific) are
-            # replaced before shorter ones if they overlap
-            sorted_ids = sorted(_active_paste_ids, key=len, reverse=True)
-            for pid in sorted_ids:
+            # Match both old and new marker formats
+            _marker_re = _re2.compile(
+                r'\[Pasted text #(\d+) \+(\d+) (chars|lines)(?: ↳([^\]]+))?\]'
+            )
+            for m in _marker_re.finditer(result):
+                pid, _, _, filename = m.group(1), m.group(2), m.group(3), m.group(4)
+                # Try in-memory first, then disk
                 stored = _paste_store.get(pid, "")
+                if not stored and filename:
+                    try:
+                        _p = _hermes_home / "pastes" / filename
+                        if _p.is_file():
+                            stored = _p.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+                if not stored:
+                    # Try legacy format lookup (old markers without ↳filename)
+                    try:
+                        _paste_dir = _hermes_home / "pastes"
+                        for _f in sorted(_paste_dir.glob(f"paste_{pid}_*.txt"), reverse=True):
+                            stored = _f.read_text(encoding="utf-8")
+                            break
+                    except Exception:
+                        pass
                 if stored:
-                    line_count = stored.count('\n')
-                    if line_count == 0:
-                        full_marker = f"[Pasted text #{pid} +{len(stored)} chars]"
-                    else:
-                        full_marker = f"[Pasted text #{pid} +{line_count + 1} lines]"
-                else:
-                    full_marker = f"[Pasted text #{pid} +1 lines]"
-                if full_marker in result:
-                    result = result.replace(full_marker, stored, 1)
+                    result = result.replace(m.group(0), stored, 1)
                     _paste_store.pop(pid, None)
                     _active_paste_ids.discard(pid)
             # Reset paste counter when all pastes are reconstructed (submitted)
@@ -8902,6 +8918,7 @@ class HermesCLI:
             URLs are never collapsed — they paste verbatim.
             Collapse threshold: 20+ characters.
             """
+            import re as _re
             text = buf.text
 
             # Guard: suppress processing immediately after a collapse or deletion.
@@ -8914,38 +8931,32 @@ class HermesCLI:
             # --- Deletion detection: wipe marker if ANY part of it was deleted ---
             for pid in list(_active_paste_ids):
                 stored = _paste_store.get(pid, "")
-                if stored:
-                    line_count = stored.count('\n')
-                    if line_count == 0:
-                        full_marker = f"[Pasted text #{pid} +{len(stored)} chars]"
-                    else:
-                        full_marker = f"[Pasted text #{pid} +{line_count + 1} lines]"
+                # Use regex to match both old and new marker formats for this paste_id
+                _del_re = _re.compile(rf'\[Pasted text #{_re.escape(pid)} \+\d+ (chars|lines)(?: ↳[^\]]+)?\]')
+                _del_match = _del_re.search(text)
+                if _del_match and _del_match.group(0) in text:
+                    # Full marker still present — no deletion
+                    continue
+                # Marker partially or fully deleted — wipe entire block.
+                _paste_just_collapsed[0] = True
+                marker_prefix = f"[Pasted text #{pid}"
+                marker_line_start = text.find(marker_prefix)
+                if marker_line_start != -1:
+                    line_end = text.find("\n", marker_line_start)
+                    if line_end == -1:
+                        line_end = len(text)
+                    result = text[:marker_line_start] + text[line_end:]
                 else:
-                    full_marker = f"[Pasted text #{pid} +1 lines]"
-                if full_marker not in text:
-                    # Marker partially or fully deleted — wipe entire block.
-                    _paste_just_collapsed[0] = True
-                    if full_marker in text:
-                        result = text.replace(full_marker, "", 1).rstrip("\n")
-                    else:
-                        marker_prefix = f"[Pasted text #{pid}"
-                        marker_line_start = text.find(marker_prefix)
-                        if marker_line_start != -1:
-                            line_end = text.find("\n", marker_line_start)
-                            if line_end == -1:
-                                line_end = len(text)
-                            result = text[:marker_line_start] + text[line_end:]
-                        else:
-                            result = text
-                    buf.text = result.rstrip("\n")
-                    buf.cursor_position = len(buf.text)
-                    _paste_store.pop(pid, None)
-                    _active_paste_ids.discard(pid)
-                    if not _active_paste_ids:
-                        _paste_counter[0] = 0
-                    _prev_text_len[0] = len(buf.text)
-                    _prev_newline_count[0] = buf.text.count('\n')
-                    return
+                    result = text
+                buf.text = result.rstrip("\n")
+                buf.cursor_position = len(buf.text)
+                _paste_store.pop(pid, None)
+                _active_paste_ids.discard(pid)
+                if not _active_paste_ids:
+                    _paste_counter[0] = 0
+                _prev_text_len[0] = len(buf.text)
+                _prev_newline_count[0] = buf.text.count('\n')
+                return
 
             # --- Fallback paste detection (terminals without bracketed paste) ---
             chars_added = len(text) - _prev_text_len[0]
@@ -8955,7 +8966,6 @@ class HermesCLI:
             _prev_newline_count[0] = line_count
             is_paste = chars_added > 1 or newlines_added >= 4
             # URL detection — never collapse URLs
-            import re as _re
             URL_RE = _re.compile(r'https?://\S+')
             is_url = bool(URL_RE.search(text)) if is_paste else False
             # Collapse all pastes of 20+ chars, unless the pasted content
