@@ -18,6 +18,9 @@ logs/
 data/
 .pytest_cache/
 tmp/
+lighthouse.*/
+undefined:/
+REVIEW.md
 temp_vision_images/
 hermes-*/*
 examples/
