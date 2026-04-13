@@ -144,7 +144,6 @@ def load_categories_from_config() -> Dict[str, Any]:
           deep:
             default_model: "nous/xiaomi-mimo-v2-pro"
     """
-    import yaml
     from pathlib import Path
     
     config_path = Path.home() / ".hermes" / "config.yaml"
@@ -152,29 +151,34 @@ def load_categories_from_config() -> Dict[str, Any]:
         return DEFAULT_CATEGORIES
     
     try:
+        import yaml
+    except ImportError:
+        return DEFAULT_CATEGORIES
+    
+    try:
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
-        
-        user_cats = config.get("categories", {})
-        if not user_cats:
-            return DEFAULT_CATEGORIES
-        
-        # Merge user categories with defaults
-        merged = {}
-        for cat_name, default_config in DEFAULT_CATEGORIES.items():
-            merged[cat_name] = dict(default_config)
-            if cat_name in user_cats:
-                merged[cat_name].update(user_cats[cat_name])
-        
-        # Add any user-defined categories not in defaults
-        for cat_name, cat_config in user_cats.items():
-            if cat_name not in merged:
-                merged[cat_name] = cat_config
-        
-        return merged
     except Exception as e:
         logger.warning(f"Failed to load categories from config: {e}")
         return DEFAULT_CATEGORIES
+    
+    user_cats = config.get("categories", {})
+    if not user_cats:
+        return DEFAULT_CATEGORIES
+    
+    # Merge user categories with defaults
+    merged = {}
+    for cat_name, default_config in DEFAULT_CATEGORIES.items():
+        merged[cat_name] = dict(default_config)
+        if cat_name in user_cats:
+            merged[cat_name].update(user_cats[cat_name])
+    
+    # Add any user-defined categories not in defaults
+    for cat_name, cat_config in user_cats.items():
+        if cat_name not in merged:
+            merged[cat_name] = cat_config
+    
+    return merged
 
 
 def route_task(message: str) -> str:

@@ -13,6 +13,7 @@ This eliminates:
 - Off-by-one edits from line number drift
 """
 
+import difflib
 import hashlib
 import json
 import re
@@ -25,8 +26,7 @@ from tools.registry import registry, tool_error
 # Hash computation
 # ---------------------------------------------------------------------------
 
-# 2-char hash dictionary (256 entries for xxHash32 compatibility with OMO)
-# We use sha256 first byte → 2-char base36 for compact display
+# 2-char hash alphabet (64 chars → 64*64 = 4096 combinations)
 _HASH_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/"
 
 def _compute_line_hash(line_number: int, content: str) -> str:
@@ -37,7 +37,7 @@ def _compute_line_hash(line_number: int, content: str) -> str:
     stripped = content.rstrip("\r\n")
     # Python 3.11 doesn't support \p{} — use str methods instead
     significant = any(c.isalnum() for c in stripped) if stripped else False
-    if not significant and stripped is not None:
+    if not significant:
         # Non-significant lines (whitespace only) use line number as seed
         seed = str(line_number).encode()
         data = stripped.encode() + seed
@@ -88,48 +88,47 @@ def validate_line(file_lines: List[str], line_number: int, expected_hash: str) -
 # Edit operations
 # ---------------------------------------------------------------------------
 
+def _validate_anchor(file_lines: List[str], ref: str) -> Tuple[int, str]:
+    """Parse and validate a hashline reference.
+    
+    Returns (line_number, error_message). Empty error = valid.
+    """
+    line, expected = parse_hashline_ref(ref)
+    valid, actual = validate_line(file_lines, line, expected)
+    if not valid:
+        return 0, (
+            f"HASH MISMATCH at line {line}: expected #{expected}, "
+            f"got #{actual}. File changed since last read. "
+            f"Re-read the file to get fresh hash anchors."
+        )
+    return line, ""
+
+
 def _apply_replace(file_lines: List[str], pos_ref: str, end_ref: Optional[str],
                    new_lines: Optional[List[str]]) -> Tuple[List[str], str]:
     """Apply a replace operation anchored to hashline references.
     
     Returns (new_file_lines, error_message).
     """
-    pos_line, pos_hash = parse_hashline_ref(pos_ref)
-    
-    # Validate pos anchor
-    valid, actual_hash = validate_line(file_lines, pos_line, pos_hash)
-    if not valid:
-        return file_lines, (
-            f"HASH MISMATCH at line {pos_line}: expected #{pos_hash}, "
-            f"got #{actual_hash}. File changed since last read. "
-            f"Re-read the file to get fresh hash anchors."
-        )
+    pos_line, err = _validate_anchor(file_lines, pos_ref)
+    if err:
+        return file_lines, err
     
     if end_ref:
-        end_line, end_hash = parse_hashline_ref(end_ref)
-        valid_end, actual_end_hash = validate_line(file_lines, end_line, end_hash)
-        if not valid_end:
-            return file_lines, (
-                f"HASH MISMATCH at end line {end_line}: expected #{end_hash}, "
-                f"got #{actual_end_hash}. File changed since last read."
-            )
+        end_line, err = _validate_anchor(file_lines, end_ref)
+        if err:
+            return file_lines, err
         
         # Replace range [pos_line, end_line] with new_lines
         if new_lines is None:
-            # Delete the range
             new_content = file_lines[:pos_line - 1] + file_lines[end_line:]
         else:
             new_content = file_lines[:pos_line - 1] + new_lines + file_lines[end_line:]
     else:
-        # Single line replace at pos_line
+        # Single line or multi-line replace at pos_line
         if new_lines is None:
-            # Delete single line
             new_content = file_lines[:pos_line - 1] + file_lines[pos_line:]
-        elif len(new_lines) == 1:
-            # Replace single line
-            new_content = file_lines[:pos_line - 1] + new_lines + file_lines[pos_line:]
         else:
-            # Replace single line with multiple lines
             new_content = file_lines[:pos_line - 1] + new_lines + file_lines[pos_line:]
     
     return new_content, ""
@@ -138,13 +137,9 @@ def _apply_replace(file_lines: List[str], pos_ref: str, end_ref: Optional[str],
 def _apply_append(file_lines: List[str], pos_ref: str,
                   new_lines: List[str]) -> Tuple[List[str], str]:
     """Append lines after the given hashline reference."""
-    pos_line, pos_hash = parse_hashline_ref(pos_ref)
-    valid, actual_hash = validate_line(file_lines, pos_line, pos_hash)
-    if not valid:
-        return file_lines, (
-            f"HASH MISMATCH at line {pos_line}: expected #{pos_hash}, "
-            f"got #{actual_hash}. File changed since last read."
-        )
+    pos_line, err = _validate_anchor(file_lines, pos_ref)
+    if err:
+        return file_lines, err
     
     new_content = file_lines[:pos_line] + new_lines + file_lines[pos_line:]
     return new_content, ""
@@ -153,13 +148,9 @@ def _apply_append(file_lines: List[str], pos_ref: str,
 def _apply_prepend(file_lines: List[str], pos_ref: str,
                    new_lines: List[str]) -> Tuple[List[str], str]:
     """Prepend lines before the given hashline reference."""
-    pos_line, pos_hash = parse_hashline_ref(pos_ref)
-    valid, actual_hash = validate_line(file_lines, pos_line, pos_hash)
-    if not valid:
-        return file_lines, (
-            f"HASH MISMATCH at line {pos_line}: expected #{pos_hash}, "
-            f"got #{actual_hash}. File changed since last read."
-        )
+    pos_line, err = _validate_anchor(file_lines, pos_ref)
+    if err:
+        return file_lines, err
     
     new_content = file_lines[:pos_line - 1] + new_lines + file_lines[pos_line - 1:]
     return new_content, ""
@@ -171,7 +162,6 @@ def _apply_prepend(file_lines: List[str], pos_ref: str,
 
 def _generate_diff(original: List[str], modified: List[str], path: str) -> str:
     """Generate a simple unified-style diff."""
-    import difflib
     diff = difflib.unified_diff(
         original, modified,
         fromfile=f"a/{path}", tofile=f"b/{path}",
@@ -357,6 +347,8 @@ def hashline_read_tool(path: str, offset: int = 1, limit: int = 500,
 # Sensitive path check (import from file_tools if available)
 # ---------------------------------------------------------------------------
 
+import fnmatch
+
 def _check_sensitive_path(path: str) -> Optional[str]:
     """Check if path is sensitive. Returns error message if blocked."""
     try:
@@ -365,14 +357,20 @@ def _check_sensitive_path(path: str) -> Optional[str]:
     except ImportError:
         pass
     
-    # Fallback: basic checks
-    sensitive_patterns = [
+    # Fallback: exact patterns and glob patterns
+    sensitive_exact = [
         "/.env", "/.ssh/", "/.gnupg/", "/.aws/", "/.gcloud/",
-        "id_rsa", "id_ed25519", "*.pem", "*.key",
+        "id_rsa", "id_ed25519",
     ]
-    for pattern in sensitive_patterns:
-        if pattern in path:
-            return f"Sensitive path blocked: {path} (matches pattern: {pattern})"
+    sensitive_glob = ["*.pem", "*.key"]
+    basename = Path(path).name
+    
+    for p in sensitive_exact:
+        if p in path:
+            return f"Sensitive path blocked: {path} (matches pattern: {p})"
+    for g in sensitive_glob:
+        if fnmatch.fnmatch(basename, g):
+            return f"Sensitive path blocked: {path} (matches pattern: {g})"
     return None
 
 
