@@ -6975,6 +6975,31 @@ class AIAgent:
                 skip_pre_tool_call_hook=True,
             )
 
+    @staticmethod
+    def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
+        """Word-wrap verbose tool output to fit the terminal width.
+
+        Splits *text* on existing newlines and wraps each line individually,
+        preserving intentional line breaks (e.g. pretty-printed JSON).
+        Returns a ready-to-print string with *label* on the first line and
+        continuation lines indented.
+        """
+        import shutil as _shutil
+        import textwrap as _tw
+        cols = _shutil.get_terminal_size((120, 24)).columns
+        wrap_width = max(40, cols - len(indent))
+        out_lines: list[str] = []
+        for raw_line in text.split("\n"):
+            if len(raw_line) <= wrap_width:
+                out_lines.append(raw_line)
+            else:
+                wrapped = _tw.wrap(raw_line, width=wrap_width,
+                                   break_long_words=True,
+                                   break_on_hyphens=False)
+                out_lines.extend(wrapped or [raw_line])
+        body = ("\n" + indent).join(out_lines)
+        return f"{indent}{label}{body}"
+
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.
 
@@ -7045,7 +7070,7 @@ class AIAgent:
                 args_str = json.dumps(args, ensure_ascii=False)
                 if self.verbose_logging:
                     print(f"  📞 Tool {i}: {name}({list(args.keys())})")
-                    print(f"     Args: {args_str}")
+                    print(self._wrap_verbose("Args: ", json.dumps(args, indent=2, ensure_ascii=False)))
                 else:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
@@ -7143,7 +7168,7 @@ class AIAgent:
             elif not self.quiet_mode:
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
-                    print(f"     Result: {function_result}")
+                    print(self._wrap_verbose("Result: ", function_result))
                 else:
                     response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
@@ -7236,7 +7261,7 @@ class AIAgent:
                 args_str = json.dumps(function_args, ensure_ascii=False)
                 if self.verbose_logging:
                     print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
-                    print(f"     Args: {args_str}")
+                    print(self._wrap_verbose("Args: ", json.dumps(function_args, indent=2, ensure_ascii=False)))
                 else:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
@@ -7524,7 +7549,7 @@ class AIAgent:
             if not self.quiet_mode:
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
-                    print(f"     Result: {function_result}")
+                    print(self._wrap_verbose("Result: ", function_result))
                 else:
                     response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
@@ -7987,6 +8012,15 @@ class AIAgent:
                     # skipping them because conversation_history is still the
                     # pre-compression length.
                     conversation_history = None
+                    # Fix: reset retry counters after compression so the model
+                    # gets a fresh budget on the compressed context.  Without
+                    # this, pre-compression retries carry over and the model
+                    # hits "(empty)" immediately after compression-induced
+                    # context loss.
+                    self._empty_content_retries = 0
+                    self._thinking_prefill_retries = 0
+                    self._last_content_with_tools = None
+                    self._mute_post_response = False
                     # Re-estimate after compression
                     _preflight_tokens = estimate_request_tokens_rough(
                         messages,
@@ -8962,12 +8996,35 @@ class AIAgent:
                             if isinstance(_default_headers, dict):
                                 _headers_sanitized = _sanitize_structure_non_ascii(_default_headers)
 
+                            # Sanitize the API key — non-ASCII characters in
+                            # credentials (e.g. ʋ instead of v from a bad
+                            # copy-paste) cause httpx to fail when encoding
+                            # the Authorization header as ASCII.  This is the
+                            # most common cause of persistent UnicodeEncodeError
+                            # that survives message/tool sanitization (#6843).
+                            _credential_sanitized = False
+                            _raw_key = getattr(self, "api_key", None) or ""
+                            if _raw_key:
+                                _clean_key = _strip_non_ascii(_raw_key)
+                                if _clean_key != _raw_key:
+                                    self.api_key = _clean_key
+                                    if isinstance(getattr(self, "_client_kwargs", None), dict):
+                                        self._client_kwargs["api_key"] = _clean_key
+                                    _credential_sanitized = True
+                                    self._vprint(
+                                        f"{self.log_prefix}⚠️  API key contained non-ASCII characters "
+                                        f"(bad copy-paste?) — stripped them. If auth fails, "
+                                        f"re-copy the key from your provider's dashboard.",
+                                        force=True,
+                                    )
+
                             if (
                                 _messages_sanitized
                                 or _prefill_sanitized
                                 or _tools_sanitized
                                 or _system_sanitized
                                 or _headers_sanitized
+                                or _credential_sanitized
                             ):
                                 self._unicode_sanitization_passes += 1
                                 self._vprint(
@@ -9255,7 +9312,9 @@ class AIAgent:
                                 "completed": False,
                                 "api_calls": api_call_count,
                                 "error": f"Request payload too large: max compression attempts ({max_compression_attempts}) reached.",
-                                "partial": True
+                                "partial": True,
+                                "failed": True,
+                                "compression_exhausted": True,
                             }
                         self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
@@ -9284,7 +9343,9 @@ class AIAgent:
                                 "completed": False,
                                 "api_calls": api_call_count,
                                 "error": "Request payload too large (413). Cannot compress further.",
-                                "partial": True
+                                "partial": True,
+                                "failed": True,
+                                "compression_exhausted": True,
                             }
 
                     # Check for context-length errors BEFORE generic 4xx handler.
@@ -9335,7 +9396,9 @@ class AIAgent:
                                     "completed": False,
                                     "api_calls": api_call_count,
                                     "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
-                                    "partial": True
+                                    "partial": True,
+                                    "failed": True,
+                                    "compression_exhausted": True,
                                 }
                             restart_with_compressed_messages = True
                             break
@@ -9385,7 +9448,9 @@ class AIAgent:
                                 "completed": False,
                                 "api_calls": api_call_count,
                                 "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
-                                "partial": True
+                                "partial": True,
+                                "failed": True,
+                                "compression_exhausted": True,
                             }
                         self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
@@ -9416,7 +9481,9 @@ class AIAgent:
                                 "completed": False,
                                 "api_calls": api_call_count,
                                 "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
-                                "partial": True
+                                "partial": True,
+                                "failed": True,
+                                "compression_exhausted": True,
                             }
 
                     # Check for non-retryable client errors.  The classifier
@@ -10154,6 +10221,13 @@ class AIAgent:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
                     
+                    # Fix: unmute output when entering the no-tool-call branch
+                    # so the user can see empty-response warnings and recovery
+                    # status messages.  _mute_post_response was set during a
+                    # prior housekeeping tool turn and should not silence the
+                    # final response path.
+                    self._mute_post_response = False
+                    
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):
                         # ── Partial stream recovery ─────────────────────
@@ -10191,16 +10265,10 @@ class AIAgent:
                             self._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
                             self._last_content_with_tools = None
                             self._empty_content_retries = 0
-                            for i in range(len(messages) - 1, -1, -1):
-                                msg = messages[i]
-                                if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                                    tool_names = []
-                                    for tc in msg["tool_calls"]:
-                                        if not tc or not isinstance(tc, dict): continue
-                                        fn = tc.get("function", {})
-                                        tool_names.append(fn.get("name", "unknown"))
-                                    msg["content"] = f"Calling the {', '.join(tool_names)} tool{'s' if len(tool_names) > 1 else ''}..."
-                                    break
+                            # Do NOT modify the assistant message content — the
+                            # old code injected "Calling the X tools..." which
+                            # poisoned the conversation history.  Just use the
+                            # fallback text as the final response and break.
                             final_response = self._strip_think_blocks(fallback).strip()
                             self._response_was_previewed = True
                             break
