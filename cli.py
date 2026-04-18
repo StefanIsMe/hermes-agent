@@ -5773,6 +5773,30 @@ class HermesCLI:
                     _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+        elif canonical == "steer":
+            # Inject a message after the next tool call without interrupting.
+            # If the agent is actively running, push the text into the agent's
+            # pending_steer slot — the drain hook in _execute_tool_calls_*
+            # will append it to the next tool result's content. If no agent
+            # is running, fall back to queue semantics (same as /queue).
+            parts = cmd_original.split(None, 1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            if not payload:
+                _cprint("  Usage: /steer <prompt>")
+            elif self._agent_running and self.agent is not None and hasattr(self.agent, "steer"):
+                try:
+                    accepted = self.agent.steer(payload)
+                except Exception as exc:
+                    _cprint(f"  Steer failed: {exc}")
+                else:
+                    if accepted:
+                        _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                    else:
+                        _cprint("  Steer rejected (empty payload).")
+            else:
+                # No active run — treat as a normal next-turn message.
+                self._pending_input.put(payload)
+                _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -7070,8 +7094,7 @@ class HermesCLI:
                 )
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
-                "Install with: pip install sounddevice numpy\n"
-                "Or: pip install hermes-agent[voice]"
+                f"Install with: {sys.executable} -m pip install sounddevice numpy"
             )
         if not reqs.get("stt_available", reqs.get("stt_key_set")):
             raise RuntimeError(
@@ -7347,8 +7370,7 @@ class HermesCLI:
                     _cprint(f"  {_DIM}Then install/update the Termux:API Android app for microphone capture{_RST}")
                     _cprint(f"  {_BOLD}Option 2: pkg install python-numpy portaudio && python -m pip install sounddevice{_RST}")
                 else:
-                    _cprint(f"\n  {_BOLD}Install: pip install {' '.join(reqs['missing_packages'])}{_RST}")
-                    _cprint(f"  {_DIM}Or: pip install hermes-agent[voice]{_RST}")
+                    _cprint(f"\n  {_BOLD}Install: {sys.executable} -m pip install {' '.join(reqs['missing_packages'])}{_RST}")
             return
 
         with self._voice_lock:
@@ -8309,7 +8331,15 @@ class HermesCLI:
                 else:
                     print(f"\n⚡ Sending after interrupt: '{preview}'")
                 self._pending_input.put(combined)
-            
+
+            # If a /steer was left over (agent finished before another tool
+            # batch could absorb it), deliver it as the next user turn.
+            _leftover_steer = result.get("pending_steer") if result else None
+            if _leftover_steer and hasattr(self, '_pending_input'):
+                preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
+                print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
+                self._pending_input.put(_leftover_steer)
+
             return response
             
         except Exception as e:
@@ -10221,8 +10251,36 @@ class HermesCLI:
         
         # Register signal handlers for graceful shutdown on SSH disconnect / SIGTERM
         def _signal_handler(signum, frame):
-            """Handle SIGHUP/SIGTERM by triggering graceful cleanup."""
+            """Handle SIGHUP/SIGTERM by triggering graceful cleanup.
+
+            Calls ``self.agent.interrupt()`` first so the agent daemon
+            thread's poll loop sees the per-thread interrupt and kills the
+            tool's subprocess group via ``_kill_process`` (os.killpg).
+            Without this, the main thread dies from KeyboardInterrupt and
+            the daemon thread is killed with it — before it can run one
+            more poll iteration to clean up the subprocess, which was
+            spawned with ``os.setsid`` and therefore survives as an orphan
+            with PPID=1.
+
+            Grace window (``HERMES_SIGTERM_GRACE``, default 1.5 s) gives
+            the daemon time to: detect the interrupt (next 200 ms poll) →
+            call _kill_process (SIGTERM + 1 s wait + SIGKILL if needed) →
+            return from _wait_for_process.  ``time.sleep`` releases the
+            GIL so the daemon actually runs during the window.
+            """
             logger.debug("Received signal %s, triggering graceful shutdown", signum)
+            try:
+                if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
+                    self.agent.interrupt(f"received signal {signum}")
+                    import time as _t
+                    try:
+                        _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
+                    except (TypeError, ValueError):
+                        _grace = 1.5
+                    if _grace > 0:
+                        _t.sleep(_grace)
+            except Exception:
+                pass  # never block signal handling
             raise KeyboardInterrupt()
         
         try:
@@ -10525,6 +10583,45 @@ def main(
     
     # Register cleanup for single-query mode (interactive mode registers in run())
     atexit.register(_run_cleanup)
+
+    # Also install signal handlers in single-query / `-q` mode.  Interactive
+    # mode registers its own inside HermesCLI.run(), but `-q` runs
+    # cli.agent.run_conversation() below and AIAgent spawns worker threads
+    # for tools — so when SIGTERM arrives on the main thread, raising
+    # KeyboardInterrupt only unwinds the main thread, not the worker
+    # running _wait_for_process.  Python then exits, the child subprocess
+    # (spawned with os.setsid, its own process group) is reparented to
+    # init and keeps running as an orphan.
+    #
+    # Fix: route SIGTERM/SIGHUP through agent.interrupt() which sets the
+    # per-thread interrupt flag the worker's poll loop checks every 200 ms.
+    # Give the worker a grace window to call _kill_process (SIGTERM to the
+    # process group, then SIGKILL after 1 s), then raise KeyboardInterrupt
+    # so main unwinds normally.  HERMES_SIGTERM_GRACE overrides the 1.5 s
+    # default for debugging.
+    def _signal_handler_q(signum, frame):
+        logger.debug("Received signal %s in single-query mode", signum)
+        try:
+            _agent = getattr(cli, "agent", None)
+            if _agent is not None:
+                _agent.interrupt(f"received signal {signum}")
+                import time as _t
+                try:
+                    _grace = float(os.getenv("HERMES_SIGTERM_GRACE", "1.5"))
+                except (TypeError, ValueError):
+                    _grace = 1.5
+                if _grace > 0:
+                    _t.sleep(_grace)
+        except Exception:
+            pass  # never block signal handling
+        raise KeyboardInterrupt()
+    try:
+        import signal as _signal
+        _signal.signal(_signal.SIGTERM, _signal_handler_q)
+        if hasattr(_signal, "SIGHUP"):
+            _signal.signal(_signal.SIGHUP, _signal_handler_q)
+    except Exception:
+        pass  # signal handler may fail in restricted environments
     
     # Handle single query mode
     if query or image:
