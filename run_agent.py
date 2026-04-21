@@ -2196,12 +2196,16 @@ class AIAgent:
 
             threshold = self.context_compressor.threshold_tokens
             if aux_context < threshold:
+                # Cap at 85% of aux model context to leave room for
+                # system prompt, compression instructions, and summary
+                # output inside the auxiliary model's window.
+                usable_aux = int(aux_context * 0.85)
                 # Auto-correct: lower the live session threshold so
                 # compression actually works this session.  The hard floor
                 # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
                 # so the new threshold is always >= 64K.
                 old_threshold = threshold
-                new_threshold = aux_context
+                new_threshold = min(usable_aux, old_threshold)
                 self.context_compressor.threshold_tokens = new_threshold
                 # Keep threshold_percent in sync so future main-model
                 # context_length changes (update_model) re-derive from a
@@ -2211,34 +2215,53 @@ class AIAgent:
                     self.context_compressor.threshold_percent = (
                         new_threshold / main_ctx
                     )
-                safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
-                msg = (
-                    f"⚠ Compression model ({aux_model}) context is "
-                    f"{aux_context:,} tokens, but the main model's "
-                    f"compression threshold was {old_threshold:,} tokens. "
-                    f"Auto-lowered this session's threshold to "
-                    f"{new_threshold:,} tokens so compression can run.\n"
-                    f"  To make this permanent, edit config.yaml — either:\n"
-                    f"  1. Use a larger compression model:\n"
-                    f"       auxiliary:\n"
-                    f"         compression:\n"
-                    f"           model: <model-with-{old_threshold:,}+-context>\n"
-                    f"  2. Lower the compression threshold:\n"
-                    f"       compression:\n"
-                    f"         threshold: 0.{safe_pct:02d}"
-                )
-                self._compression_warning = msg
-                self._emit_status(msg)
-                logger.warning(
-                    "Auxiliary compression model %s has %d token context, "
-                    "below the main model's compression threshold of %d "
-                    "tokens — auto-lowered session threshold to %d to "
-                    "keep compression working.",
-                    aux_model,
-                    aux_context,
-                    old_threshold,
-                    new_threshold,
-                )
+                safe_pct = int((new_threshold / main_ctx) * 100) if main_ctx else 50
+                # Two severity levels:
+                # 1) Mismatch <= 2x: compression works fine, just a note
+                # 2) Mismatch > 2x: warn user to fix config
+                mismatch_ratio = old_threshold / new_threshold if new_threshold else 999
+                if mismatch_ratio <= 2.0:
+                    # Minor mismatch — compression works, just log it.
+                    # No user-facing warning; the auto-lower is sufficient.
+                    logger.info(
+                        "Compression threshold auto-capped: %d -> %d tokens "
+                        "(aux model %s has %d ctx, %.0f%% usable). "
+                        "Set 'compression.threshold: 0.%02d' in config.yaml "
+                        "to suppress this adjustment.",
+                        old_threshold,
+                        new_threshold,
+                        aux_model,
+                        aux_context,
+                        85,
+                        safe_pct,
+                    )
+                else:
+                    # Significant mismatch — warn with actionable fix.
+                    msg = (
+                        f"⚠ Compression model ({aux_model}) has {aux_context:,} "
+                        f"token context but threshold was {old_threshold:,} tokens. "
+                        f"Auto-capped at {new_threshold:,} tokens.\n"
+                        f"  Fix permanently — either:\n"
+                        f"  1. Lower threshold in config.yaml:\n"
+                        f"       compression:\n"
+                        f"         threshold: 0.{safe_pct:02d}\n"
+                        f"  2. Use a larger compression model:\n"
+                        f"       auxiliary:\n"
+                        f"         compression:\n"
+                        f"           model: <model-with-{old_threshold:,}+-context>"
+                    )
+                    self._compression_warning = msg
+                    self._emit_status(msg)
+                    logger.warning(
+                        "Auxiliary compression model %s has %d token context, "
+                        "below the main model's compression threshold of %d "
+                        "tokens — auto-capped session threshold to %d to "
+                        "keep compression working.",
+                        aux_model,
+                        aux_context,
+                        old_threshold,
+                        new_threshold,
+                    )
         except ValueError:
             # Hard rejections (aux below minimum context) must propagate
             # so the session refuses to start.
