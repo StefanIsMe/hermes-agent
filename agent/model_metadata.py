@@ -1122,16 +1122,33 @@ def get_model_context_length(
         if ctx:
             return ctx
 
-    # 6. OpenRouter live API metadata (provider-unaware fallback)
+    # 6. Provider-aware hardcoded defaults — checked BEFORE OpenRouter
+    #    because the generic aggregator may have stale/incomplete data
+    #    (e.g. OpenRouter reports 128K for MiniMax-M2.7 when it's 204.8K).
+    #    Provider-specific knowledge beats the generic fallback.
+    model_lower = model.lower()
+    if effective_provider:
+        prov_lower = effective_provider.lower()
+        # Check only provider name against DEFAULT_CONTEXT_LENGTHS keys.
+        # Broad family keys (e.g. "grok", "claude") should NOT match via
+        # model name here — that causes OpenRouter models to get stale
+        # hardcoded values instead of OpenRouter's live metadata (step 7).
+        # Model-name matching happens at step 8 (no-provider fallback).
+        for default_model, length in sorted(
+            DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+        ):
+            if default_model in prov_lower:
+                return length
+
+    # 7. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
     if model in metadata:
         return metadata[model].get("context_length", 128000)
 
-    # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
-    # Only check `default_model in model` (is the key a substring of the input).
-    # The reverse (`model in default_model`) causes shorter names like
-    # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.
-    model_lower = model.lower()
+    # 8. Hardcoded defaults — model name fallback (no provider known)
+    #    Only check `default_model in model` (is the key a substring of the input).
+    #    The reverse (`model in default_model`) causes shorter names like
+    #    "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.
     for default_model, length in sorted(
         DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
     ):
