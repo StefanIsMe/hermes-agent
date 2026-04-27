@@ -41,7 +41,6 @@ def _make_agent(
     agent.tool_progress_callback = None
     agent._compression_warning = None
     agent._aux_compression_context_length_config = None
-    agent.tools = []
 
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
@@ -57,8 +56,9 @@ def _make_agent(
 @patch("agent.model_metadata.get_model_context_length", return_value=80_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_client, mock_ctx_len):
-    """Auto-correction: aux >= 64K floor but < threshold → lower threshold
-    to aux_context so compression still works this session."""
+    """Auto-correction: aux >= 64K floor but < threshold → cap threshold
+    at 85% of aux_context so compression works with safety margin.
+    With mismatch ratio 100K/68K=1.47 ≤ 2.0, this is a silent adjustment."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
     # threshold = 100,000 — aux has 80,000 (above 64K floor, below threshold)
     mock_client = MagicMock()
@@ -71,20 +71,11 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
 
     agent._check_compression_model_feasibility()
 
-    assert len(messages) == 1
-    assert "Compression model" in messages[0]
-    assert "80,000" in messages[0]        # aux context
-    assert "100,000" in messages[0]       # old threshold
-    assert "Auto-lowered" in messages[0]
-    # Actionable persistence guidance included
-    assert "config.yaml" in messages[0]
-    assert "auxiliary:" in messages[0]
-    assert "compression:" in messages[0]
-    assert "threshold:" in messages[0]
-    # Warning stored for gateway replay
-    assert agent._compression_warning is not None
-    # Threshold on the live compressor was actually lowered to aux_context.
-    assert agent.context_compressor.threshold_tokens == 80_000
+    # Mismatch ratio 100K/68K ≈ 1.47 ≤ 2.0 → silent adjustment, no user message
+    assert len(messages) == 0
+    assert agent._compression_warning is None
+    # Threshold capped at 85% of aux context (80,000 * 0.85 = 68,000)
+    assert agent.context_compressor.threshold_tokens == 68_000
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)
@@ -181,7 +172,6 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
         base_url="http://custom-endpoint:8080/v1",
         api_key="sk-custom",
         config_context_length=1_000_000,
-        provider="openrouter",
     )
 
 
@@ -204,7 +194,6 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
         base_url="http://custom:8080/v1",
         api_key="sk-test",
         config_context_length=None,
-        provider="openrouter",
     )
 
 
@@ -257,7 +246,6 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         base_url="http://custom-endpoint:8080/v1",
         api_key="sk-custom",
         config_context_length=1_000_000,
-        provider="",
     )
 
 
@@ -328,7 +316,7 @@ def test_exact_threshold_boundary_no_warning(mock_get_client, mock_ctx_len):
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_just_below_threshold_auto_corrects(mock_get_client, mock_ctx_len):
     """Auto-correct fires when aux context is one token below the threshold
-    (and above the 64K hard floor)."""
+    (and above the 64K hard floor). Mismatch ratio 100K/85K=1.18 ≤ 2.0 → silent."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
     mock_client = MagicMock()
     mock_client.base_url = "https://openrouter.ai/api/v1"
@@ -340,10 +328,37 @@ def test_just_below_threshold_auto_corrects(mock_get_client, mock_ctx_len):
 
     agent._check_compression_model_feasibility()
 
+    # Silent: mismatch ratio is 100K/85K ≈ 1.18 ≤ 2.0
+    assert len(messages) == 0
+    assert agent._compression_warning is None
+    # 85% of 99,999 = 84,999
+    assert agent.context_compressor.threshold_tokens == 84_999
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_significant_mismatch_shows_warning(mock_get_client, mock_ctx_len):
+    """When mismatch ratio > 2.0, a user-facing warning is shown.
+    200K ctx * 0.95 threshold = 190K → 85% of 80K = 68K → ratio 2.79 > 2.0."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.95)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "tiny-compression-model")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
     assert len(messages) == 1
-    assert "small-model" in messages[0]
-    assert "Auto-lowered" in messages[0]
-    assert agent.context_compressor.threshold_tokens == 99_999
+    assert "tiny-compression-model" in messages[0]
+    assert "Auto-capped" in messages[0]
+    assert "190,000" in messages[0]  # old threshold
+    assert "68,000" in messages[0]   # new threshold (85% of 80K)
+    assert "config.yaml" in messages[0]
+    assert agent._compression_warning is not None
+    assert agent.context_compressor.threshold_tokens == 68_000
 
 
 # ── Two-phase: __init__ + run_conversation replay ───────────────────
@@ -352,8 +367,9 @@ def test_just_below_threshold_auto_corrects(mock_get_client, mock_ctx_len):
 @patch("agent.model_metadata.get_model_context_length", return_value=80_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_warning_stored_for_gateway_replay(mock_get_client, mock_ctx_len):
-    """__init__ stores the warning; _replay sends it through status_callback."""
-    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    """__init__ stores the warning; _replay sends it through status_callback.
+    Uses threshold_percent=0.95 so mismatch ratio 190K/68K=2.79 > 2.0 → warns."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.95)
     mock_client = MagicMock()
     mock_client.base_url = "https://openrouter.ai/api/v1"
     mock_client.api_key = "sk-aux"
@@ -364,8 +380,11 @@ def test_warning_stored_for_gateway_replay(mock_get_client, mock_ctx_len):
     agent._emit_status = lambda msg: vprint_messages.append(msg)
     agent._check_compression_model_feasibility()
 
-    assert len(vprint_messages) == 1  # CLI got it
+    assert len(vprint_messages) == 1  # CLI got it (mismatch > 2.0)
+    assert "Auto-capped" in vprint_messages[0]
     assert agent._compression_warning is not None  # stored for replay
+    # Threshold capped at 85% of 80,000 = 68,000
+    assert agent.context_compressor.threshold_tokens == 68_000
 
     # Phase 2: gateway wires callback post-init, then run_conversation replays
     callback_events = []
@@ -373,7 +392,7 @@ def test_warning_stored_for_gateway_replay(mock_get_client, mock_ctx_len):
     agent._replay_compression_warning()
 
     assert any(
-        ev == "lifecycle" and "Auto-lowered" in msg
+        ev == "lifecycle" and "Auto-capped" in msg
         for ev, msg in callback_events
     )
 
@@ -414,8 +433,9 @@ def test_replay_without_callback_is_noop():
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_len):
     """After replay in run_conversation, _compression_warning is cleared
-    so the warning is not sent again on subsequent turns."""
-    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    so the warning is not sent again on subsequent turns.
+    Uses threshold_percent=0.95 so mismatch ratio 190K/68K=2.79 > 2.0 → warns."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.95)
     mock_client = MagicMock()
     mock_client.base_url = "https://openrouter.ai/api/v1"
     mock_client.api_key = "sk-aux"
@@ -425,6 +445,8 @@ def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_
     agent._check_compression_model_feasibility()
 
     assert agent._compression_warning is not None
+    # Threshold capped at 85% of 80,000 = 68,000
+    assert agent.context_compressor.threshold_tokens == 68_000
 
     # Simulate what run_conversation does
     callback_events = []
