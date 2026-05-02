@@ -25,6 +25,7 @@ import os
 import secrets
 import sqlite3
 import sys
+import datetime
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2424,16 +2425,31 @@ def board_stats(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _to_epoch(value: Any) -> Optional[int]:
+    """Coerce a timestamp (int epoch, ISO str, or None) to an epoch int."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+        except (ValueError, OSError):
+            return None
+    return None
+
+
 def task_age(task: Task) -> dict:
     """Return age metrics for a single task. All values are seconds or None."""
     now = int(time.time())
-    age_since_created = now - int(task.created_at) if task.created_at else None
-    age_since_started = (
-        now - int(task.started_at) if task.started_at else None
-    )
+    created_at = _to_epoch(task.created_at)
+    started_at = _to_epoch(task.started_at)
+    completed_at = _to_epoch(task.completed_at)
+    age_since_created = now - created_at if created_at is not None else None
+    age_since_started = now - started_at if started_at is not None else None
     time_to_complete = (
-        int(task.completed_at) - int(task.started_at or task.created_at)
-        if task.completed_at else None
+        completed_at - (started_at or created_at)
+        if completed_at is not None and (started_at or created_at) is not None else None
     )
     return {
         "created_age_seconds": age_since_created,
