@@ -1591,7 +1591,11 @@ def _agent_cbs(sid: str) -> dict:
         tool_gen_callback=lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
         thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
-        reasoning_callback=lambda text: _emit("reasoning.delta", sid, {"text": text}),
+        reasoning_callback=lambda text: (
+            _emit("reasoning.delta", sid, {"text": text})
+            if _sessions.get(sid, {}).get("show_reasoning", False)
+            else None
+        ),
         status_callback=lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
