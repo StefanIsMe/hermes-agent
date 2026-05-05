@@ -4281,6 +4281,12 @@ class AIAgent:
         return content.strip()
 
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+        # Respect HERMES_SAVE_SESSION=0 to disable session file creation.
+        # Used by pipelines (dream_pipeline, etc.) to prevent polluting
+        # ~/.hermes/sessions/ with thousands of grading byproduct files.
+        if os.environ.get("HERMES_SAVE_SESSION") == "0":
+            return
+
         """
         Save the full raw session to a JSON file.
 
