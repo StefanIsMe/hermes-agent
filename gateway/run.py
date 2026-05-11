@@ -2110,7 +2110,7 @@ class GatewayRunner:
         if not session_id:
             return False
         try:
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.enhanced_goals import GoalManager
             return GoalManager(session_id=session_id).is_active()
         except Exception as exc:
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
@@ -9260,7 +9260,7 @@ class GatewayRunner:
         goals module can't be loaded.
         """
         try:
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.enhanced_goals import GoalManager
         except Exception as exc:
             logger.debug("goal manager unavailable: %s", exc)
             return None, None
@@ -9510,7 +9510,7 @@ class GatewayRunner:
         queue and takes priority naturally.
         """
         try:
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.enhanced_goals import GoalManager
         except Exception as exc:
             logger.debug("goal continuation: goals module unavailable: %s", exc)
             return

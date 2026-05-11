@@ -732,12 +732,33 @@ export function TextInput({
               pastePlainText(text)
             }
           })
+        } else {
+          // Linux / non-macOS: also need to read system clipboard since
+          // bracketed paste (cbPaste) is not available on GNOME Terminal.
+          void readClipboardText().then(text => {
+            if (text) {
+              pastePlainText(text)
+            }
+          })
         }
 
         return
       }
 
       if (isMac && isActionMod(k) && inp.toLowerCase() === 'c') {
+        const range = selRange()
+
+        if (range) {
+          const text = vRef.current.slice(range.start, range.end)
+
+          void writeClipboardText(text)
+        }
+
+        return
+      }
+
+      // Linux copy: Ctrl+C when text is selected
+      if (!isMac && isActionMod(k) && inp.toLowerCase() === 'c') {
         const range = selRange()
 
         if (range) {

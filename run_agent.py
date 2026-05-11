@@ -7430,6 +7430,23 @@ class AIAgent:
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = self._strip_think_blocks(text or "")
+
+            # Strip model-generated internal-label patterns that arrive as plain
+            # delta.content text (MiniMax sends thinking/self-report as plain text
+            # — not as think tags or reasoning_content fields — so it slips through
+            # StreamingThinkScrubber into the message bubble).  Patterns always
+            # appear at line start; strip and discard the entire line.
+            if text:
+                _lower_text = text.lower()
+                if _lower_text.startswith("[minimax"):
+                    _label_end = text.find("]", 1)
+                    if _label_end != -1:
+                        text = text[_label_end + 1:].lstrip()
+                    else:
+                        text = ""
+                if not text:
+                    return
+
             # Then feed through the stateful context scrubber so memory-context
             # spans split across chunks cannot leak to the UI (#5719).
             scrubber = getattr(self, "_stream_context_scrubber", None)

@@ -1293,12 +1293,45 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
+def _soul_load_dir(hermes_home: Path, subdir: str) -> list[str]:
+    """Load all .md files from ~/.hermes/soul/<subdir>/ in filesystem order."""
+    dir_path = hermes_home / "soul" / subdir
+    if not dir_path.is_dir():
+        return []
+    parts = []
+    for f in sorted(dir_path.iterdir()):
+        if f.suffix == ".md" and f.is_file():
+            content = f.read_text(encoding="utf-8").strip()
+            if content:
+                parts.append(content)
+    return parts
+
+
+def _soul_load_flat(hermes_home: Path, fname: str) -> str:
+    """Load a flat soul-*.md file (backward compat). Returns empty string if missing."""
+    f = hermes_home / fname
+    if f.is_file():
+        return f.read_text(encoding="utf-8").strip()
+    return ""
+
+
 def load_soul_md() -> Optional[str]:
-    """Load SOUL.md from HERMES_HOME and return its content, or None.
+    """Load SOUL.md + soul/ directory tree from HERMES_HOME and return concatenated content.
+
+    Directory structure (loaded in this order):
+      soul/identity/   -- core identity and persona
+      soul/rules/      -- enforcement rules (cannot be overridden)
+      soul/coding/     -- coding practices and tool use methodology
+      soul/patterns/    -- active self-checks and failure patterns
+      soul/refs/       -- stable infrastructure references
+      soul/context/    -- user context, preferences, communication style
+
+    SOUL.md is loaded first as bootstrap/identity anchor.
+    All files are scanned and truncated once at the end.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
-    ``skip_soul=True`` so SOUL.md isn't injected twice.
+    ``skip_soul=True`` so SOUL.md is not injected twice.
     """
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -1306,18 +1339,43 @@ def load_soul_md() -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = get_hermes_home() / "SOUL.md"
+    hermes_home = get_hermes_home()
+    soul_path = hermes_home / "SOUL.md"
     if not soul_path.exists():
         return None
+
     try:
-        content = soul_path.read_text(encoding="utf-8").strip()
-        if not content:
+        parts = []
+
+        # Bootstrap
+        soul_content = soul_path.read_text(encoding="utf-8").strip()
+        if soul_content:
+            parts.append(soul_content)
+
+        # soul/ subdirectory tree (primary -- all info preserved, no trimming)
+        for subdir in ["identity", "rules", "coding", "patterns", "refs", "context"]:
+            parts.extend(_soul_load_dir(hermes_home, subdir))
+
+        # Fall back to flat soul-*.md files if the subdirectory is empty
+        # (allows staged migration; flat files are skipped once subdir has content)
+        for fname in [
+            "soul-identity.md", "soul-rules.md", "soul-coding.md",
+            "soul-retrospective.md", "soul-project-refs.md", "soul-memory.md",
+        ]:
+            content = _soul_load_flat(hermes_home, fname)
+            if content:
+                parts.append(content)
+
+        if not parts:
             return None
-        content = _scan_context_content(content, "SOUL.md")
-        content = _truncate_content(content, "SOUL.md")
-        return content
+
+        # Concatenate, scan, and truncate once
+        full_content = "\n\n".join(parts)
+        full_content = _scan_context_content(full_content, "SOUL.md")
+        full_content = _truncate_content(full_content, "SOUL.md")
+        return full_content
     except Exception as e:
-        logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
+        logger.debug("Could not read SOUL.md/soul/ from %s: %s", soul_path, e)
         return None
 
 

@@ -3225,7 +3225,7 @@ class HermesCLI:
         """Return the active reasoning display callback for the current mode."""
         if self.show_reasoning and self.streaming_enabled:
             return self._stream_reasoning_delta
-        if self.verbose and not self.show_reasoning:
+        if self.verbose and self.show_reasoning:   # only when show_reasoning is ON
             return self._on_reasoning
         return None
 
@@ -6031,6 +6031,7 @@ class HermesCLI:
 
         if self._app and in_main_thread:
             from prompt_toolkit.application import run_in_terminal
+            import asyncio as _asyncio
             was_visible = self._status_bar_visible
             self._status_bar_visible = False
             self._app.invalidate()

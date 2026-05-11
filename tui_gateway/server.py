@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -133,6 +134,38 @@ except (ValueError, TypeError):
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
+
+# ── Content scrubbers ─────────────────────────────────────────────────
+# Strip [CHUB: ...] context markers that chub_auto injects into the prompt.
+# The model sometimes echoes them back in its text response; they must not
+# reach the user-facing output.  Applied to final_response text before it
+# is wrapped in a message.complete event or returned from chat RPC methods.
+
+_CHUB_LINE_RE = re.compile(r"^\s*\[CHUB:[^\]]*\]\s*$", re.IGNORECASE)
+_CHUB_INLINE_RE = re.compile(r"\s*\[CHUB:[^\]]*\]\s*", re.IGNORECASE)
+
+
+def _strip_chub_tags(text: str) -> str:
+    """Remove [CHUB: ...] lines and inline tags from text."""
+    if not text or "[chub:" not in text.lower():
+        return text
+    lines = text.split('\n')
+    result = []
+    for line in lines:
+        stripped = line.strip()
+        if _CHUB_LINE_RE.match(stripped):
+            result.append(" ")  # Replace with space placeholder to preserve line position
+        else:
+            result.append(_CHUB_INLINE_RE.sub(" ", line))
+    assembled = '\n'.join(result)
+    # Collapse multiple spaces within non-empty lines
+    assembled = re.sub(r"  +", " ", assembled)
+    # Collapse blank lines that resulted from removed chub lines
+    assembled = re.sub(r"\n +\n", "\n\n", assembled)
+    assembled = re.sub(r"^\s+$", "", assembled, flags=re.MULTILINE)
+    assembled = re.sub(r"\n\n\n+", "\n\n", assembled)
+    return assembled.strip()
+
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
@@ -1637,7 +1670,11 @@ def _agent_cbs(sid: str) -> dict:
         tool_gen_callback=lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
         thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
-        reasoning_callback=lambda text: _emit("reasoning.delta", sid, {"text": text}),
+        reasoning_callback=lambda text: (
+            _emit("reasoning.delta", sid, {"text": text})
+            if _sessions.get(sid, {}).get("show_reasoning", False)
+            else None
+        ),
         status_callback=lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
@@ -3190,6 +3227,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 )
 
                 raw = result.get("final_response", "")
+                raw = _strip_chub_tags(raw)
                 status = (
                     "interrupted"
                     if result.get("interrupted")
@@ -3212,6 +3250,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     last_reasoning = lr.strip()
             else:
                 raw = str(result)
+                raw = _strip_chub_tags(raw)
                 status = "complete"
 
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
